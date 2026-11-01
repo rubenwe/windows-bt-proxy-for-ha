@@ -44,7 +44,17 @@ public sealed class InstallerTests : IDisposable
 
         Assert.Equal(
             "sc.exe failure WindowsBtProxyForHA reset= 86400 actions= restart/5000/restart/5000/restart/30000",
-            _runner.Single("sc.exe failure"));
+            _runner.Single("sc.exe failure "));
+    }
+
+    [Fact]
+    public async Task Install_makes_a_non_zero_service_exit_trigger_the_failure_actions()
+    {
+        await NewInstaller().InstallAsync(CancellationToken.None);
+
+        Assert.Equal("sc.exe failureflag WindowsBtProxyForHA 1", _runner.Single("sc.exe failureflag"));
+        var commands = _runner.Commands.ToList();
+        Assert.Equal(commands.FindIndex(c => c.StartsWith("sc.exe failure ", StringComparison.Ordinal)) + 1, commands.IndexOf("sc.exe failureflag WindowsBtProxyForHA 1"));
     }
 
     [Fact]
@@ -369,6 +379,7 @@ public sealed class InstallerTests : IDisposable
                 $"sc.exe create WindowsBtProxyForHA binPath= \"\\\"{InstalledExe}\\\" service\" start= auto DisplayName= \"Windows BT Proxy for Home Assistant\"",
                 "sc.exe description WindowsBtProxyForHA \"Passive Bluetooth LE proxy for Home Assistant (ESPHome-compatible API).\"",
                 "sc.exe failure WindowsBtProxyForHA reset= 86400 actions= restart/5000/restart/5000/restart/30000",
+                "sc.exe failureflag WindowsBtProxyForHA 1",
                 "netsh.exe advfirewall firewall delete rule name=\"Windows BT Proxy for Home Assistant (TCP 6053)\"",
                 $"netsh.exe advfirewall firewall add rule name=\"Windows BT Proxy for Home Assistant (TCP 6053)\" dir=in action=allow protocol=TCP localport=6053 profile=private,domain program=\"{InstalledExe}\"",
                 "sc.exe start WindowsBtProxyForHA",

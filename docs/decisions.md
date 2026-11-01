@@ -46,3 +46,18 @@ watcher started: Created
 
 The WinRT advertisement watcher works in a Native AOT LocalSystem service in session 0, including before any
 user logs in. Gate passed: the service does the scanning, as designed. No user-session helper is needed.
+
+## Host (`run` / `service`)
+
+- **Google.Protobuf 3.32.1 to 3.36.2.** Once the API server was reachable from `Main`, the Native AOT publish reported
+  IL3053 for Google.Protobuf (`RepeatedField<T>.TryGetArrayAsSpanPinnedUnsafe` calls `Marshal.SizeOf(Type)`, IL3050).
+  3.36.2 no longer does, so the build stays warning-free without suppressing anything.
+- **`expected_mac` format checked, no change.** Home Assistant's ESPHome integration does not pass `expected_mac`
+  to `APIClient` at all; it compares the MAC from the Noise server hello (`InvalidEncryptionKeyAPIError.received_mac`)
+  with the config entry's unique id after `format_mac()`, which accepts 12 hex digits without separators. aioesphomeapi's own
+  `expected_mac` is documented as lower case without separators, which is what `DeviceIdentity.MacHex` sends.
+- **Identity needs the adapter address.** The device MAC is the Bluetooth adapter's address, known only once the scanner has
+  looked the adapter up. With no adapter at all the host keeps the scanner retrying and does not open the API port until an
+  address exists (a made-up MAC would make Home Assistant adopt a bogus device).
+- **`--no-key-acl`** (undocumented, tests only): creates `noise.key` without the SYSTEM/Administrators-only ACL so the interop
+  tests can provision a key as a normal user. The service is always started by the SCM as plain `service`.

@@ -157,10 +157,14 @@ Wanted behaviour (**the author decided: always encrypted**):
   key (a re-authentication prompt on the ESPHome entry), or receive one via provisioning.
   Verify which happens and document it.
 
-**Open technical question for the builder:** confirm from HA's ESPHome integration source (at
-the HA version current at build time) when and how HA sends `NoiseEncryptionSetKeyRequest`, and
-which API version / flags / TXT records trigger it. Pick the path that works with stock HA; if
-auto-provisioning isn't possible, ship the manual path and note it in the README.
+**Resolved during planning (HA 2026.10.4 `esphome/manager.py`, ESPHome `api_connection.cpp` and
+`mdns_component.cpp`):** on every connect, if the entry has no key and `DeviceInfo.api_encryption_supported`
+is true, HA generates a key (`base64(32 random bytes)`). With `api_encryption_provisionable` true it
+opens a short-lived Noise session with the **all-zero PSK** and sends `NoiseEncryptionSetKeyRequest`
+whose `key` field is the **base64 text**; on success it stores the key in the entry and the reauth
+flow reloads with it. No API-version gate. ESPHome devices advertise TXT `api_encryption_supported`
++ `api_provisioning=zero-psk` while unkeyed and `api_encryption` once keyed. So the preferred path
+works with stock HA; the manual path stays as a fallback (`key` commands).
 
 Key storage: in the settings directory (§5.6), file ACL'd to SYSTEM + Administrators. DPAPI
 (machine scope) on top is the builder's call.

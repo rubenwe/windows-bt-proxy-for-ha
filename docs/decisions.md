@@ -61,3 +61,36 @@ user logs in. Gate passed: the service does the scanning, as designed. No user-s
   address exists (a made-up MAC would make Home Assistant adopt a bogus device).
 - **`--no-key-acl`** (undocumented, tests only): creates `noise.key` without the SYSTEM/Administrators-only ACL so the interop
   tests can provision a key as a normal user. The service is always started by the SCM as plain `service`.
+
+## End-to-end, 2026-11-01
+
+On the author's desktop (Windows 11, Intel AX210 over Wi-Fi) against the author's production Home Assistant 2026.10.4
+(HA Green). Build `0.1.0`, Native AOT win-x64, installed with `windows-bt-proxy.exe install` from an elevated terminal.
+The spike's old ESPHome entry was removed first, so this is a fresh adoption.
+
+| Check | Result |
+| --- | --- |
+| `install`: copy, service (auto start, restart on failure, `failureflag` set), firewall rule (Private/Domain), settings | pass |
+| Re-run of `install` over a running install (upgrade in place) | pass, twice |
+| Service starts, scans (about 100–117 advertisements a minute), API listens on 6053 | pass |
+| HA adds it (ESPHome, host + port), no key typed: HA provisions one over zero-PSK Noise | pass |
+| After provisioning: plaintext refused, HA reconnects encrypted and subscribes to raw advertisements | pass |
+| TXT flips from `api_encryption_supported` + `api_provisioning` to `api_encryption` (debounced re-publish) | pass |
+| `noise.key` not readable by a normal user | pass |
+| HA receives `BluetoothLERawAdvertisementsResponse` from the proxy; Bluetooth remote scanner entry auto-created | pass |
+| No HA repairs for the device | pass, after the version fix below |
+| Zeroconf discovery (HA debug log: "Discovered new device bt-proxy-…" with IP and TXT) | pass, after the SRV fix below |
+
+Two defects showed up only against the real HA, both fixed:
+
+- **`ble_firmware_outdated` repair.** HA raises it for a Bluetooth proxy that reports an ESPHome version below its
+  `STABLE_BLE_VERSION` (2026.5.1 in HA 2026.10). The proxy reported 2025.6.0; it now reports 2026.10.0. Keep
+  `DeviceIdentity.EsphomeVersion` at or above HA's value when HA raises it.
+- **Discovery never completed.** HA received PTR/SRV/TXT, then asked for the A/AAAA records of the SRV target
+  `<name>.local` and got no answer: Windows' mDNS responder answers address queries only for the computer's own name,
+  not for the host name given to `DnsServiceConstructInstance`. The SRV target is now `<computer name>.local`. HA's ESPHome
+  flow only uses the host name as a provisional device name and takes the real one from the device. (The Python spike
+  had the same problem for a different reason.)
+
+Not covered here, still to do by hand: Bluetooth radio off/on while running; PC sleep/resume; a reboot with the
+installed service (the pre-logon scan itself was proven in the session-0 gate above); a second PC; `uninstall`.

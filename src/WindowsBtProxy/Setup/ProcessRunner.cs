@@ -66,8 +66,11 @@ public sealed class ProcessRunner : IProcessRunner
 
     public void StartDetached(string exe, string args)
     {
-        // Not redirected and not waited for: the child must keep running after this process exits.
-        using var process = Process.Start(CreateStartInfo(exe, args));
+        // Not redirected and not waited for: the child must keep running after this process exits. It may live until logoff (the tray),
+        // so it starts in the system folder: a current folder inherited from here would stay locked, even against the removal helper's rmdir.
+        var info = CreateStartInfo(exe, args);
+        info.WorkingDirectory = Environment.SystemDirectory;
+        using var process = Process.Start(info);
     }
 
     /// <summary>The last <see cref="OutputTailLines"/> non-blank lines.</summary>

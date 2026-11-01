@@ -91,6 +91,7 @@ public sealed class SetupCommandsTests : IDisposable
 
     [Theory]
     [InlineData("install", "now")]
+    [InlineData("install", "--no-tray", "extra")]
     [InlineData("uninstall", "--purge")]
     [InlineData("key")]
     [InlineData("key", "export")]
@@ -186,6 +187,125 @@ public sealed class SetupCommandsTests : IDisposable
         Assert.Equal(1, code);
         Assert.Contains("Unexpected error: The system cannot find the file specified", _output.ToString());
         Assert.DoesNotContain("   at ", _output.ToString());
+    }
+
+    // ---- tray ----
+
+    private string TrayStart => $"{Path.Combine(_box.ProgramDir, "windows-bt-proxy.exe")} tray";
+
+    [Fact]
+    public async Task Non_elevated_install_starts_tray_after_elevated_child_succeeds()
+    {
+        var elevation = new FakeElevation(elevated: false) { RelaunchExitCode = 0 };
+
+        var code = await Run(["install"], elevation: elevation);
+
+        Assert.Equal(0, code);
+        Assert.Equal([TrayStart], _runner.Detached);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(null)]
+    public async Task Non_elevated_install_does_not_start_tray_when_child_fails(int? childExit)
+    {
+        var elevation = new FakeElevation(elevated: false) { RelaunchExitCode = childExit };
+
+        await Run(["install"], elevation: elevation);
+
+        Assert.Empty(_runner.Detached);
+    }
+
+    [Fact]
+    public async Task Elevated_install_starts_tray()
+    {
+        var runKey = new FakeRunKey();
+
+        var code = await SetupCommands.RunAsync(["install"], _box.Context(_runner, _output, runKey: runKey), CancellationToken.None);
+
+        Assert.Equal(0, code);
+        Assert.Equal([TrayStart], _runner.Detached);
+        Assert.NotNull(runKey.Value);
+    }
+
+    [Fact]
+    public async Task Elevated_install_that_fails_does_not_start_tray()
+    {
+        _runner.Handler = line => line.StartsWith("sc.exe create", StringComparison.Ordinal) ? 5 : 0;
+
+        var code = await Run(["install"]);
+
+        Assert.Equal(1, code);
+        Assert.Empty(_runner.Detached);
+    }
+
+    [Fact]
+    public async Task Relaunched_install_does_not_start_tray()
+    {
+        var runKey = new FakeRunKey();
+        var context = _box.Context(_runner, _output, runKey: runKey) with { WaitForKey = () => { } };
+
+        var code = await SetupCommands.RunAsync(["install", "--relaunched"], context, CancellationToken.None);
+
+        Assert.Equal(0, code);
+        Assert.Empty(_runner.Detached); // the waiting parent starts it, as the user rather than as administrator
+        Assert.NotNull(runKey.Value);
+    }
+
+    [Fact]
+    public async Task No_tray_flag_is_passed_to_child_and_starts_nothing()
+    {
+        var elevation = new FakeElevation(elevated: false) { RelaunchExitCode = 0 };
+
+        var code = await Run(["install", "--no-tray"], elevation: elevation);
+
+        Assert.Equal(0, code);
+        Assert.Equal(["install", "--no-tray"], Assert.Single(elevation.Relaunches));
+        Assert.Empty(_runner.Detached);
+    }
+
+    [Fact]
+    public async Task Elevated_install_with_no_tray_removes_the_run_value_and_starts_nothing()
+    {
+        var runKey = new FakeRunKey { Value = Installer.TrayCommandLine(@"C:\old\windows-bt-proxy.exe") };
+
+        var code = await SetupCommands.RunAsync(["install", "--No-Tray"], _box.Context(_runner, _output, runKey: runKey), CancellationToken.None);
+
+        Assert.Equal(0, code);
+        Assert.Equal(["Delete"], runKey.Calls);
+        Assert.Empty(_runner.Detached);
+    }
+
+    [Fact]
+    public async Task Relaunched_uninstall_from_elsewhere_waits_for_a_key_even_when_a_tray_holds_the_installed_exe()
+    {
+        var installed = Path.Combine(_box.ProgramDir, "windows-bt-proxy.exe");
+        Directory.CreateDirectory(_box.ProgramDir);
+        File.WriteAllText(installed, "x");
+        var waited = 0;
+        var context = _box.Context(_runner, _output) with { WaitForKey = () => waited++ };
+
+        using (new FileStream(installed, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            await SetupCommands.RunAsync(["uninstall", "--relaunched"], context, CancellationToken.None);
+        }
+
+        Assert.Single(_runner.Detached); // the folder goes once the tray exits
+        Assert.Equal(1, waited); // this window does not hold the installed exe, so its output can stay readable
+    }
+
+    [Fact]
+    public void Usage_mentions_no_tray()
+    {
+        Assert.Contains("install [--no-tray]", WindowsBtProxy.Hosting.CommandLine.Usage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Setup_usage_mentions_no_tray()
+    {
+        await Run(["install", "now"]);
+
+        Assert.Contains("install [--no-tray]", _output.ToString(), StringComparison.Ordinal);
     }
 
     // ---- key ----

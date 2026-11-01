@@ -8,8 +8,9 @@ public sealed class InstallerTests : IDisposable
     private readonly SetupSandbox _box = new();
     private readonly FakeProcessRunner _runner = new();
     private readonly StringWriter _output = new();
+    private readonly FakeRunKey _runKey = new();
 
-    private Installer NewInstaller(InstallPaths? paths = null) => new(_runner, paths ?? _box.Paths(), new SetupConsoleLogger(_output));
+    private Installer NewInstaller(InstallPaths? paths = null) => new(_runner, paths ?? _box.Paths(), new SetupConsoleLogger(_output), _runKey);
 
     private string InstalledExe => Path.Combine(_box.ProgramDir, "windows-bt-proxy.exe");
 
@@ -26,7 +27,7 @@ public sealed class InstallerTests : IDisposable
     [Fact]
     public async Task Install_runs_sc_create_with_auto_start_and_service_arg()
     {
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         Assert.Equal(
             $"sc.exe create WindowsBtProxyForHA binPath= \"\\\"{InstalledExe}\\\" service\" start= auto DisplayName= \"Windows BT Proxy for Home Assistant\"",
@@ -40,7 +41,7 @@ public sealed class InstallerTests : IDisposable
     [Fact]
     public async Task Install_sets_restart_on_failure()
     {
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         Assert.Equal(
             "sc.exe failure WindowsBtProxyForHA reset= 86400 actions= restart/5000/restart/5000/restart/30000",
@@ -50,7 +51,7 @@ public sealed class InstallerTests : IDisposable
     [Fact]
     public async Task Install_makes_a_non_zero_service_exit_trigger_the_failure_actions()
     {
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         Assert.Equal("sc.exe failureflag WindowsBtProxyForHA 1", _runner.Single("sc.exe failureflag"));
         var commands = _runner.Commands.ToList();
@@ -62,7 +63,7 @@ public sealed class InstallerTests : IDisposable
     {
         SeedInstall(port: 7000);
 
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         var deleteAt = _runner.IndexOf("netsh.exe advfirewall firewall delete rule");
         var addAt = _runner.IndexOf("netsh.exe advfirewall firewall add rule");
@@ -88,7 +89,7 @@ public sealed class InstallerTests : IDisposable
             return 0;
         };
 
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         Assert.Equal("net.exe stop WindowsBtProxyForHA", _runner.Commands[0]);
         Assert.Equal("old build", exeWhenStopped); // still the old file when the service was stopped, i.e. stop came before the copy
@@ -101,7 +102,7 @@ public sealed class InstallerTests : IDisposable
     {
         _runner.Handler = line => line.StartsWith("sc.exe create", StringComparison.Ordinal) ? 1073 : 0;
 
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         Assert.StartsWith("sc.exe config WindowsBtProxyForHA binPath= ", _runner.Single("sc.exe config"));
         Assert.Contains("sc.exe start WindowsBtProxyForHA", _runner.Commands);
@@ -112,7 +113,7 @@ public sealed class InstallerTests : IDisposable
     {
         SeedInstall();
 
-        await NewInstaller(_box.Paths(sourceExe: InstalledExe)).InstallAsync(CancellationToken.None);
+        await NewInstaller(_box.Paths(sourceExe: InstalledExe)).InstallAsync(tray: true, CancellationToken.None);
 
         Assert.Equal("old build", File.ReadAllText(InstalledExe));
         Assert.Contains(_runner.Commands, c => c.StartsWith("sc.exe create", StringComparison.Ordinal));
@@ -123,7 +124,7 @@ public sealed class InstallerTests : IDisposable
     {
         SeedInstall(port: 7000);
 
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         Assert.Contains("bt-proxy-test", File.ReadAllText(_box.Data.SettingsFile));
         Assert.Equal("key", File.ReadAllText(_box.Data.KeyFile));
@@ -134,7 +135,7 @@ public sealed class InstallerTests : IDisposable
     {
         _runner.Handler = line => line.StartsWith("sc.exe create", StringComparison.Ordinal) ? 5 : 0;
 
-        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
+        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(tray: true, CancellationToken.None));
 
         Assert.Contains("create the service", e.Message);
         Assert.Contains("5", e.Message);
@@ -146,7 +147,7 @@ public sealed class InstallerTests : IDisposable
     {
         _runner.Handler = line => line.StartsWith("sc.exe start", StringComparison.Ordinal) ? 1053 : 0;
 
-        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
+        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(tray: true, CancellationToken.None));
 
         Assert.Contains("start the service", e.Message);
         Assert.Contains(_runner.Commands, c => c.StartsWith("netsh.exe advfirewall firewall add rule", StringComparison.Ordinal));
@@ -157,7 +158,7 @@ public sealed class InstallerTests : IDisposable
     {
         _runner.Handler = line => line.StartsWith("powershell.exe", StringComparison.Ordinal) ? 1 : 0;
 
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         Assert.Equal(
             "powershell.exe -NoProfile -NonInteractive -Command \"try { if (Get-NetConnectionProfile -ErrorAction Stop | Where-Object NetworkCategory -eq 'Public') { exit 1 } else { exit 0 } } catch { exit 2 }\"",
@@ -174,7 +175,7 @@ public sealed class InstallerTests : IDisposable
     {
         _runner.Handler = line => line.StartsWith("powershell.exe", StringComparison.Ordinal) ? 2 : 0;
 
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         var text = _output.ToString();
         Assert.Contains("Could not check the network profile", text);
@@ -185,7 +186,7 @@ public sealed class InstallerTests : IDisposable
     [Fact]
     public async Task Install_does_not_warn_when_no_network_is_public()
     {
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         Assert.DoesNotContain("warning:", _output.ToString());
     }
@@ -239,6 +240,7 @@ public sealed class InstallerTests : IDisposable
 
         Assert.True(File.Exists(InstalledExe));
         Assert.True(File.Exists(_box.Data.SettingsFile));
+        Assert.Empty(_runKey.Calls); // the service is still there, so the tray keeps starting with it
     }
 
     [Fact]
@@ -253,8 +255,8 @@ public sealed class InstallerTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_box.ProgramDir, "leftover.txt")));
         Assert.False(Directory.Exists(_box.Data.Root));
         var detached = Assert.Single(_runner.Detached);
-        // Retries once a second for up to a minute, until the folder is gone, instead of a fixed delay.
-        Assert.StartsWith("cmd.exe /c for /l %i in (1,1,60) do @if exist ", detached);
+        // Retries once a second for up to two minutes (longer than a tray's 30 s lifecycle check), until the folder is gone, instead of a fixed delay.
+        Assert.StartsWith("cmd.exe /c for /l %i in (1,1,120) do @if exist ", detached);
         Assert.Contains($"if exist \"{_box.ProgramDir}\" (rmdir /s /q \"{_box.ProgramDir}\" 2>nul & ping -n 2 127.0.0.1 >nul)", detached);
         Assert.True(installer.SelfRemovalScheduled);
     }
@@ -274,7 +276,7 @@ public sealed class InstallerTests : IDisposable
             held.Dispose();
         }, TestContext.Current.CancellationToken);
 
-        await new Installer(hybrid, _box.Paths(sourceExe: installed), new SetupConsoleLogger(_output)).UninstallAsync(keepSettings: true, CancellationToken.None);
+        await new Installer(hybrid, _box.Paths(sourceExe: installed), new SetupConsoleLogger(_output), _runKey).UninstallAsync(keepSettings: true, CancellationToken.None);
         await release;
 
         Assert.False(Directory.Exists(_box.ProgramDir));
@@ -371,7 +373,7 @@ public sealed class InstallerTests : IDisposable
     [Fact]
     public async Task Install_issues_exactly_this_command_sequence()
     {
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         Assert.Equal(
             [
@@ -393,7 +395,7 @@ public sealed class InstallerTests : IDisposable
     {
         SeedInstall(port: 7000);
 
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         var deletes = _runner.Commands.Where(c => c.StartsWith("netsh.exe advfirewall firewall delete rule", StringComparison.Ordinal)).ToList();
         Assert.Equal(2, deletes.Count);
@@ -409,7 +411,7 @@ public sealed class InstallerTests : IDisposable
         SeedInstall();
         _box.Inspector.Owners[_box.Data.Root] = new System.Security.Principal.SecurityIdentifier("S-1-5-21-1-2-3-1001");
 
-        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
+        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(tray: true, CancellationToken.None));
 
         Assert.Equal($"{_box.Data.Root} is not owned by SYSTEM or Administrators; delete it and run install again.", e.Message);
         Assert.Empty(_runner.Commands);
@@ -422,7 +424,7 @@ public sealed class InstallerTests : IDisposable
         SeedInstall();
         _box.Inspector.Owners[_box.Data.KeyFile] = new System.Security.Principal.SecurityIdentifier("S-1-5-21-1-2-3-1001");
 
-        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
+        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(tray: true, CancellationToken.None));
 
         Assert.Contains(_box.Data.KeyFile, e.Message);
         Assert.Contains("not owned by SYSTEM or Administrators", e.Message);
@@ -438,7 +440,7 @@ public sealed class InstallerTests : IDisposable
         _box.Inspector.CheckRoot = _box.Data.Root;
         _box.Inspector.OwnersFromSecondCheck[_box.Data.SettingsFile] = new System.Security.Principal.SecurityIdentifier("S-1-5-21-1-2-3-1001");
 
-        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
+        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(tray: true, CancellationToken.None));
 
         Assert.Equal(2, _box.Inspector.Checks);
         Assert.Contains("not owned by SYSTEM or Administrators", e.Message);
@@ -453,7 +455,7 @@ public sealed class InstallerTests : IDisposable
         SeedInstall();
         _box.Inspector.Owners[_box.Data.KeyFile] = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
 
-        await NewInstaller().InstallAsync(CancellationToken.None);
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
 
         Assert.Contains(_runner.Commands, c => c.StartsWith("sc.exe create", StringComparison.Ordinal));
     }
@@ -467,7 +469,7 @@ public sealed class InstallerTests : IDisposable
         Directory.CreateDirectory(Path.Combine(_box.Data.Root, "logs"));
         _box.Inspector.Links.Add(inside ? Path.Combine(_box.Data.Root, "logs") : _box.Data.Root);
 
-        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
+        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(tray: true, CancellationToken.None));
 
         Assert.Contains("link", e.Message);
         Assert.Empty(_runner.Commands);
@@ -502,7 +504,7 @@ public sealed class InstallerTests : IDisposable
         _runner.Handler = line => line.StartsWith("sc.exe create", StringComparison.Ordinal) ? 1072 : 0;
         _runner.OutputHandler = line => line.StartsWith("sc.exe create", StringComparison.Ordinal) ? "[SC] CreateService FAILED 1072:\nThe specified service has been marked for deletion." : "";
 
-        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
+        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(tray: true, CancellationToken.None));
 
         Assert.Contains("sc.exe exited with code 1072", e.Message);
         Assert.Contains("net helpmsg 1072", e.Message);
@@ -516,7 +518,7 @@ public sealed class InstallerTests : IDisposable
         _runner.Handler = line => line.StartsWith("netsh.exe advfirewall firewall add", StringComparison.Ordinal) ? 1 : 0;
         _runner.OutputHandler = line => line.StartsWith("netsh.exe advfirewall firewall add", StringComparison.Ordinal) ? "The requested operation requires elevation." : "";
 
-        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
+        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(tray: true, CancellationToken.None));
 
         Assert.Contains("netsh.exe exited with code 1", e.Message);
         Assert.Contains("requires elevation", e.Message);
@@ -528,7 +530,7 @@ public sealed class InstallerTests : IDisposable
     {
         _runner.Handler = line => line.StartsWith("sc.exe failure", StringComparison.Ordinal) ? 5 : 0;
 
-        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
+        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(tray: true, CancellationToken.None));
 
         Assert.DoesNotContain("said", e.Message);
     }
@@ -539,6 +541,133 @@ public sealed class InstallerTests : IDisposable
         Assert.Equal(
             "\"C:\\Program Files\\WindowsBtProxyForHA\\windows-bt-proxy.exe\" tray",
             Installer.TrayCommandLine(@"C:\Program Files\WindowsBtProxyForHA\windows-bt-proxy.exe"));
+    }
+
+    // ---- tray autostart and upgrades under a running tray ----
+
+    [Fact]
+    public async Task Install_writes_run_value_with_tray_command_line()
+    {
+        var commandsBefore = -1;
+        _runKey.OnCall = _ => commandsBefore = _runner.Commands.Count;
+
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
+
+        Assert.Equal([$"Write \"{InstalledExe}\" tray"], _runKey.Calls);
+        Assert.Equal(Installer.TrayCommandLine(InstalledExe), _runKey.Value);
+        // After the firewall rule, before the service is started.
+        Assert.Equal(_runner.IndexOf("netsh.exe advfirewall firewall add rule") + 1, commandsBefore);
+    }
+
+    [Fact]
+    public async Task Install_with_no_tray_deletes_run_value()
+    {
+        _runKey.Value = Installer.TrayCommandLine(InstalledExe); // an earlier install with the tray
+
+        await NewInstaller().InstallAsync(tray: false, CancellationToken.None);
+
+        Assert.Equal(["Delete"], _runKey.Calls);
+        Assert.Null(_runKey.Value);
+    }
+
+    [Fact]
+    public async Task Upgrade_moves_a_locked_exe_aside()
+    {
+        SeedInstall();
+        // A running image: readable, renamable, but not writable.
+        using (var running = new FileStream(InstalledExe, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+        {
+            // Precondition: a plain copy over it fails, so only the rename can explain a successful install.
+            Assert.Throws<IOException>(() => File.Copy(_box.SourceExe, InstalledExe, overwrite: true));
+
+            await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
+
+            Assert.Equal("new build", File.ReadAllText(InstalledExe));
+            var old = Assert.Single(Directory.GetFiles(_box.ProgramDir, "*.old"));
+            Assert.Matches(@"^windows-bt-proxy\.exe\.\d{14}\.old$", Path.GetFileName(old));
+            Assert.Equal("old build", File.ReadAllText(old)); // the running copy, still open under its new name
+        }
+        Assert.Contains("sc.exe start WindowsBtProxyForHA", _runner.Commands);
+    }
+
+    [Fact]
+    public void A_file_open_like_a_running_image_can_be_renamed()
+    {
+        // What Upgrade_moves_a_locked_exe_aside relies on, shown on its own.
+        var file = Path.Combine(_box.Root, "image.exe");
+        File.WriteAllText(file, "x");
+        using var open = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+
+        File.Move(file, file + ".old");
+
+        Assert.False(File.Exists(file));
+        Assert.True(File.Exists(file + ".old"));
+    }
+
+    [Fact]
+    public async Task Install_deletes_leftover_old_files()
+    {
+        SeedInstall();
+        var free = Path.Combine(_box.ProgramDir, "windows-bt-proxy.exe.20260101000000.old");
+        var stillRunning = Path.Combine(_box.ProgramDir, "windows-bt-proxy.exe.20260202000000.old");
+        var unrelated = Path.Combine(_box.ProgramDir, "notes.txt");
+        File.WriteAllText(free, "x");
+        File.WriteAllText(stillRunning, "x");
+        File.WriteAllText(unrelated, "x");
+
+        // A tray from two versions ago still runs this one, so it cannot be deleted; that must not stop the install.
+        using (new FileStream(stillRunning, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
+        }
+
+        Assert.False(File.Exists(free));
+        Assert.True(File.Exists(stillRunning));
+        Assert.True(File.Exists(unrelated));
+        Assert.Equal("new build", File.ReadAllText(InstalledExe));
+    }
+
+    [Fact]
+    public async Task Uninstall_removes_run_value_before_the_folder()
+    {
+        SeedInstall();
+        _runKey.Value = Installer.TrayCommandLine(InstalledExe);
+        bool? folderThere = null;
+        bool? serviceDeleted = null;
+        _runKey.OnCall = _ =>
+        {
+            folderThere = Directory.Exists(_box.ProgramDir);
+            serviceDeleted = _runner.Commands.Contains("sc.exe delete WindowsBtProxyForHA");
+        };
+
+        var installer = NewInstaller();
+        await installer.UninstallAsync(keepSettings: false, CancellationToken.None);
+
+        Assert.Equal(["Delete"], _runKey.Calls);
+        Assert.Null(_runKey.Value);
+        Assert.True(serviceDeleted);
+        Assert.True(folderThere);
+        Assert.True(!Directory.Exists(_box.ProgramDir) || installer.SelfRemovalScheduled);
+    }
+
+    [Fact]
+    public async Task Uninstall_schedules_removal_when_a_tray_still_holds_the_installed_exe()
+    {
+        SeedInstall();
+        var installer = NewInstaller(); // not running from the program folder
+
+        // A tray's image cannot be deleted until the tray notices the Run value is gone and exits.
+        using (new FileStream(InstalledExe, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            await installer.UninstallAsync(keepSettings: true, CancellationToken.None);
+        }
+
+        Assert.True(installer.SelfRemovalScheduled);
+        Assert.False(installer.RunsFromProgramDir);
+        var detached = Assert.Single(_runner.Detached);
+        Assert.StartsWith("cmd.exe /c for /l %i in (1,1,120) do @if exist ", detached);
+        Assert.Contains($"rmdir /s /q \"{_box.ProgramDir}\"", detached);
+        Assert.DoesNotContain("delete it yourself", _output.ToString());
     }
 
     public void Dispose() => _box.Dispose();

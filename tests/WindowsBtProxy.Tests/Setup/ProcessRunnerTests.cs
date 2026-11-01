@@ -46,4 +46,29 @@ public sealed class ProcessRunnerTests
         Assert.Equal(4, err.ExitCode);
         Assert.Equal("it broke", err.Output);
     }
+
+    [Fact]
+    public async Task StartDetached_runs_in_the_system_folder_so_a_long_lived_child_holds_no_user_folder()
+    {
+        // The tray that install starts lives until logoff; its current folder must not be the one install was run from.
+        var dir = Directory.CreateTempSubdirectory("detached-tests-").FullName;
+        try
+        {
+            var file = Path.Combine(dir, "cwd.txt");
+            Assert.NotEqual(Environment.SystemDirectory, Environment.CurrentDirectory, StringComparer.OrdinalIgnoreCase);
+
+            new ProcessRunner().StartDetached("cmd.exe", $"/c cd > \"{file}.tmp\" & move /y \"{file}.tmp\" \"{file}\" >nul");
+
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (!File.Exists(file) && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(50, TestContext.Current.CancellationToken);
+            }
+            Assert.Equal(Environment.SystemDirectory, File.ReadAllText(file).Trim(), StringComparer.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

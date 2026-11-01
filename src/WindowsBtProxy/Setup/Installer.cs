@@ -9,9 +9,11 @@ namespace WindowsBtProxy.Setup;
 /// <summary>
 /// Installs, upgrades and removes the Windows service, its firewall rule and its files (spec 5.7). Every machine change goes
 /// through <see cref="IProcessRunner"/> or the folders in <see cref="InstallPaths"/>, so tests can run it against temp folders and
-/// a fake runner. Both operations can be repeated: install over an install is an upgrade, uninstall of nothing is a no-op.
+/// a fake runner; the tray's autostart value goes through <see cref="IRunKey"/>. Both operations can be repeated: install over an
+/// install is an upgrade, uninstall of nothing is a no-op. Running trays keep the installed exe open, so an upgrade moves it aside
+/// instead of overwriting it, and uninstall removes the autostart value first, which makes those trays exit.
 /// </summary>
-public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger log)
+public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger log, IRunKey runKey)
 {
     public const string ServiceName = "WindowsBtProxyForHA";
     public const string DisplayName = "Windows BT Proxy for Home Assistant";
@@ -25,11 +27,18 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
     private const int ErrorServiceMarkedForDeletion = 1072;
     private const int ErrorServiceExists = 1073;
     private const int ErrorServiceAlreadyRunning = 1056;
+    private const int ErrorSharingViolation = 32;
 
     private static readonly char[] UnsafeInCmdLine = ['"', '%', '&', '^', '|', '<', '>'];
 
-    /// <summary>True after <see cref="UninstallAsync"/> left the running program's folder to be removed by a helper once this process has exited.</summary>
+    /// <summary>
+    /// True after <see cref="UninstallAsync"/> could not remove the program folder (this process or a tray still runs from it) and left it
+    /// to a helper that removes it once nothing holds it open.
+    /// </summary>
     public bool SelfRemovalScheduled { get; private set; }
+
+    /// <summary>This process runs from the program folder, so the folder cannot go until it exits.</summary>
+    public bool RunsFromProgramDir => paths.RunningExe is { } running && IsInside(paths.ProgramDir, running);
 
     public static string FirewallRuleName(int port) => $"Windows BT Proxy for Home Assistant (TCP {port.ToString(CultureInfo.InvariantCulture)})";
 
@@ -39,7 +48,9 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
     /// </summary>
     public static string TrayCommandLine(string exe) => $"\"{exe}\" tray";
 
-    public async Task InstallAsync(CancellationToken ct)
+    /// <param name="tray">False for <c>install --no-tray</c>: the autostart value is removed rather than written, so the option also opts out on an upgrade.</param>
+    /// <param name="ct">Cancels the external tools and the copy retries.</param>
+    public async Task InstallAsync(bool tray, CancellationToken ct)
     {
         var source = paths.RunningExe ?? throw new SetupException("Cannot tell where this program is running from, so there is nothing to copy.");
         if (!File.Exists(source))
@@ -98,6 +109,17 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
             ct);
         log.LogInformation("Firewall rule \"{Rule}\" allows inbound TCP {Port} on Private and Domain networks.", ruleName, port);
 
+        if (tray)
+        {
+            runKey.Write(TrayCommandLine(exe));
+            log.LogInformation("The tray icon starts at every sign-in.");
+        }
+        else
+        {
+            runKey.Delete();
+            log.LogInformation("The tray icon does not start at sign-in (--no-tray).");
+        }
+
         var start = await runner.RunAsync("sc.exe", $"start {ServiceName}", ct);
 
         await WarnIfPublicNetworkAsync(ct);
@@ -133,6 +155,9 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
                 throw Failed("sc.exe", delete, "remove the service");
         }
 
+        // Running trays notice the missing value within their 30 s lifecycle check and exit, which lets go of the program file.
+        runKey.Delete();
+
         foreach (var rulePort in new[] { port, ProxySettings.DefaultPort }.Distinct())
         {
             await runner.RunAsync("netsh.exe", $"advfirewall firewall delete rule name=\"{FirewallRuleName(rulePort)}\"", ct);
@@ -160,6 +185,7 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
     private async Task CopyProgramAsync(string source, string target, CancellationToken ct)
     {
         Directory.CreateDirectory(paths.ProgramDir);
+        DeleteLeftoverOldFiles();
         if (SamePath(source, target))
         {
             log.LogInformation("Already running from {Path}; not copying.", target);
@@ -176,6 +202,11 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
             }
             catch (IOException e) when (attempt < 5)
             {
+                // A running tray maps the file, so it cannot be overwritten, but it can be renamed; the trays then restart into the new copy.
+                if ((e.HResult & 0xFFFF) == ErrorSharingViolation && File.Exists(target) && TryMoveAside(target))
+                {
+                    continue;
+                }
                 // The service was just stopped; Windows can take a moment to let go of the old file.
                 log.LogDebug(e, "Copy attempt {Attempt} failed.", attempt);
                 await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
@@ -184,6 +215,38 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
             {
                 throw new SetupException($"Could not copy the program to {target}: {e.Message} Is the service still running? Stop it and try again.", e);
             }
+        }
+    }
+
+    /// <summary>Copies moved aside by earlier upgrades. One that a tray still runs cannot be deleted yet; the next install tries again.</summary>
+    private void DeleteLeftoverOldFiles()
+    {
+        foreach (var old in Directory.EnumerateFiles(paths.ProgramDir).Where(f => f.EndsWith(".old", StringComparison.OrdinalIgnoreCase)).ToList())
+        {
+            try
+            {
+                File.Delete(old);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                log.LogDebug(e, "Could not delete {Path}; a tray may still run it.", old);
+            }
+        }
+    }
+
+    private bool TryMoveAside(string target)
+    {
+        var aside = $"{target}.{DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture)}.old";
+        try
+        {
+            File.Move(target, aside);
+            log.LogInformation("{Path} is in use (a tray icon is running it); moved it aside to {Aside}.", target, Path.GetFileName(aside));
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            log.LogDebug(e, "Could not move {Path} aside.", target);
+            return false;
         }
     }
 
@@ -241,7 +304,7 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
         }
 
         var running = paths.RunningExe;
-        if (running is null || !IsInside(paths.ProgramDir, running))
+        if (running is null || !RunsFromProgramDir)
         {
             if (await TryDeleteDirectoryAsync(paths.ProgramDir, ct))
             {
@@ -249,7 +312,8 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
             }
             else
             {
-                log.LogWarning("Could not remove {Dir}; delete it yourself.", paths.ProgramDir);
+                // A tray still runs the installed exe; it exits once it sees the autostart value is gone.
+                ScheduleSelfRemoval();
             }
             return;
         }
@@ -281,21 +345,22 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
     }
 
     /// <summary>
-    /// The detached helper retries <c>rmdir</c> once a second for up to a minute, because how long this process (and, when it was
-    /// relaunched elevated, the process waiting for it) keeps the program file open is not predictable. It stops being busy as
-    /// soon as the folder is gone. The folder name goes into a command line, so only the expected, harmless shape is accepted.
+    /// The detached helper retries <c>rmdir</c> once a second for up to two minutes, because how long this process (and, when it was
+    /// relaunched elevated, the process waiting for it) or a tray keeps the program file open is not predictable; two minutes outlast a
+    /// tray's 30 s lifecycle check. It stops being busy as soon as the folder is gone. The folder name goes into a command line, so only
+    /// the expected, harmless shape is accepted.
     /// </summary>
     private void ScheduleSelfRemoval()
     {
         var dir = Path.TrimEndingDirectorySeparator(paths.ProgramDir);
         if (!Path.IsPathFullyQualified(dir) || Path.GetFileName(dir) != ServiceName || dir.IndexOfAny(UnsafeInCmdLine) >= 0)
         {
-            log.LogWarning("Not scheduling removal of {Dir} (unexpected folder name); delete it yourself after this program exits.", paths.ProgramDir);
+            log.LogWarning("Not scheduling removal of {Dir} (unexpected folder name); delete it yourself after this program and any tray icon have exited.", paths.ProgramDir);
             return;
         }
-        runner.StartDetached("cmd.exe", $"/c for /l %i in (1,1,60) do @if exist \"{dir}\" (rmdir /s /q \"{dir}\" 2>nul & ping -n 2 127.0.0.1 >nul)");
+        runner.StartDetached("cmd.exe", $"/c for /l %i in (1,1,120) do @if exist \"{dir}\" (rmdir /s /q \"{dir}\" 2>nul & ping -n 2 127.0.0.1 >nul)");
         SelfRemovalScheduled = true;
-        log.LogInformation("{Dir} will be removed a moment after this program exits.", dir);
+        log.LogInformation("{Dir} is still in use; it will be removed as soon as this program and any tray icon have exited.", dir);
     }
 
     private async Task<bool> TryDeleteDirectoryAsync(string dir, CancellationToken ct)

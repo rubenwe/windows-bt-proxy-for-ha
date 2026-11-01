@@ -9,6 +9,6 @@ public interface IProcessRunner
     /// <summary>Runs <paramref name="exe"/> with the raw command line <paramref name="args"/> and waits for it. Never throws for a non-zero exit code.</summary>
     Task<ProcessResult> RunAsync(string exe, string args, CancellationToken ct);
 
-    /// <summary>Starts <paramref name="exe"/> in the background, with no window, and returns without waiting. Used for the clean-up that has to outlive this process.</summary>
+    /// <summary>Starts <paramref name="exe"/> in the background, with no window and in the system folder, and returns without waiting. Used for what has to outlive this process: the folder clean-up and the tray.</summary>
     void StartDetached(string exe, string args);
 }

@@ -1,23 +1,29 @@
+using System.ComponentModel;
 using Microsoft.Extensions.Logging;
 using WindowsBtProxy.Crypto;
 
 namespace WindowsBtProxy.Setup;
 
 /// <summary>
-/// <c>install</c>, <c>uninstall [--keep-settings]</c> and <c>key show|rotate|clear</c>. <c>install</c> and <c>uninstall</c> relaunch
-/// themselves through a UAC prompt when not elevated; <c>key</c> commands do not (a relaunched console's output would be lost, and
-/// the key file is unreadable to a normal user), they ask for an elevated terminal instead.
+/// <c>install [--no-tray]</c>, <c>uninstall [--keep-settings]</c> and <c>key show|rotate|clear</c>. <c>install</c> and <c>uninstall</c>
+/// relaunch themselves through a UAC prompt when not elevated; <c>key</c> commands do not (a relaunched console's output would be lost,
+/// and the key file is unreadable to a normal user), they ask for an elevated terminal instead. A successful <c>install</c> also starts
+/// the tray for the current user, from the least privileged process at hand: the non-elevated parent, never the elevated copy it waits for.
 /// </summary>
 public static class SetupCommands
 {
     /// <summary>Appended to the arguments of the elevated copy; it keeps its console window open at the end.</summary>
     internal const string RelaunchedFlag = "--relaunched";
 
+    /// <summary>Install without the tray: no autostart value (an existing one is removed) and no tray started now.</summary>
+    internal const string NoTrayFlag = "--no-tray";
+
     private const string NotElevated = "Run this from an elevated terminal (Run as administrator).";
 
     private const string Usage =
         "Usage:\n" +
-        "  windows-bt-proxy install                  copy to Program Files, register and start the service, open the firewall\n" +
+        "  windows-bt-proxy install [--no-tray]      copy to Program Files, register and start the service, open the firewall,\n" +
+        "                                            start the tray icon at every sign-in (--no-tray: don't)\n" +
         "  windows-bt-proxy uninstall [--keep-settings]\n" +
         "  windows-bt-proxy key show|rotate|clear    manage the API encryption key (elevated terminal)";
 
@@ -35,7 +41,7 @@ public static class SetupCommands
         var outcome = new Outcome();
         try
         {
-            return await DispatchAsync(rest, context, outcome, ct);
+            return await DispatchAsync(rest, relaunched, context, outcome, ct);
         }
         finally
         {
@@ -47,26 +53,35 @@ public static class SetupCommands
         }
     }
 
-    private static async Task<int> DispatchAsync(string[] args, SetupContext context, Outcome outcome, CancellationToken ct)
+    private static async Task<int> DispatchAsync(string[] args, bool relaunched, SetupContext context, Outcome outcome, CancellationToken ct)
     {
         try
         {
-            if (Is(args[0], "install") && args.Length == 1)
+            if (Is(args[0], "install") && (args.Length == 1 || (args.Length == 2 && Is(args[1], NoTrayFlag))))
             {
-                return await ElevatedAsync(args, context, ct, async () =>
+                var tray = args.Length == 1;
+                // A relaunch passes --no-tray on to the elevated copy, which is the one that writes or removes the autostart value.
+                var code = await ElevatedAsync(args, context, ct, async () =>
                 {
-                    await new Installer(context.Runner, context.Paths, context.Log).InstallAsync(ct);
+                    await new Installer(context.Runner, context.Paths, context.Log, context.RunKey).InstallAsync(tray, ct);
                     return 0;
                 });
+                // The relaunched copy leaves this to the parent waiting for it, which runs as the user.
+                if (code == 0 && tray && !relaunched)
+                {
+                    StartTray(context);
+                }
+                return code;
             }
             if (Is(args[0], "uninstall") && (args.Length == 1 || (args.Length == 2 && Is(args[1], "--keep-settings"))))
             {
                 var keep = args.Length == 2;
                 return await ElevatedAsync(args, context, ct, async () =>
                 {
-                    var installer = new Installer(context.Runner, context.Paths, context.Log);
+                    var installer = new Installer(context.Runner, context.Paths, context.Log, context.RunKey);
                     await installer.UninstallAsync(keep, ct);
-                    outcome.ExitNow = installer.SelfRemovalScheduled;
+                    // Only this program's own file keeps its waiting window from closing; a tray's is let go when the tray exits.
+                    outcome.ExitNow = installer.SelfRemovalScheduled && installer.RunsFromProgramDir;
                     return 0;
                 });
             }
@@ -111,6 +126,21 @@ public static class SetupCommands
         // The elevated copy printed into its own window, which is gone now; say at least how it ended.
         context.Out.WriteLine($"Elevated {args[0].ToLowerInvariant()} finished (exit code {code}).");
         return code.Value;
+    }
+
+    /// <summary>Starts the installed tray now rather than at the next sign-in. A failure is only a note: the install itself worked.</summary>
+    private static void StartTray(SetupContext context)
+    {
+        try
+        {
+            context.Runner.StartDetached(context.Paths.ExePath, "tray");
+            context.Out.WriteLine("Started the tray icon.");
+        }
+        catch (Exception e) when (e is Win32Exception or InvalidOperationException)
+        {
+            context.Log.LogDebug(e, "Could not start the tray.");
+            context.Out.WriteLine($"Could not start the tray icon ({e.Message}); it starts at the next sign-in.");
+        }
     }
 
     private static bool Is(string arg, string verb) => string.Equals(arg, verb, StringComparison.OrdinalIgnoreCase);

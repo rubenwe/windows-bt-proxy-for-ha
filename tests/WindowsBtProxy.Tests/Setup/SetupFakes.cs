@@ -51,6 +51,40 @@ internal sealed class FakeElevation(bool elevated) : IElevation
     }
 }
 
+/// <summary>The autostart value in memory. <see cref="Calls"/> records every call in order; <see cref="OnCall"/> runs first, so a test can see what else had happened by then.</summary>
+internal sealed class FakeRunKey : IRunKey
+{
+    public string? Value { get; set; }
+
+    public List<string> Calls { get; } = [];
+
+    public Action<string>? OnCall { get; set; }
+
+    public string? Read()
+    {
+        Record("Read");
+        return Value;
+    }
+
+    public void Write(string commandLine)
+    {
+        Record($"Write {commandLine}");
+        Value = commandLine;
+    }
+
+    public void Delete()
+    {
+        Record("Delete");
+        Value = null;
+    }
+
+    private void Record(string call)
+    {
+        OnCall?.Invoke(call);
+        Calls.Add(call);
+    }
+}
+
 /// <summary>Everything is a plain folder owned by Administrators unless a test says otherwise.</summary>
 internal sealed class FakeInspector : IDataDirInspector
 {
@@ -109,8 +143,8 @@ internal sealed class SetupSandbox : IDisposable
     public InstallPaths Paths(string? sourceExe = null, string? programDir = null)
         => new(programDir ?? ProgramDir, Data, ApplyDataDirAcl: false, SourceExe: sourceExe ?? SourceExe, Inspector: Inspector);
 
-    public SetupContext Context(FakeProcessRunner runner, StringWriter output, bool elevated = true, InstallPaths? paths = null, FakeElevation? elevation = null)
-        => new(runner, paths ?? Paths(), elevation ?? new FakeElevation(elevated), output, new SetupConsoleLogger(output)) { ApplyKeyAcl = false };
+    public SetupContext Context(FakeProcessRunner runner, StringWriter output, bool elevated = true, InstallPaths? paths = null, FakeElevation? elevation = null, FakeRunKey? runKey = null)
+        => new(runner, paths ?? Paths(), elevation ?? new FakeElevation(elevated), output, new SetupConsoleLogger(output), runKey ?? new FakeRunKey()) { ApplyKeyAcl = false };
 
     public void Dispose()
     {

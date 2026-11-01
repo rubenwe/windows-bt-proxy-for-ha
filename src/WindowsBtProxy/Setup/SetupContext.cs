@@ -8,7 +8,8 @@ public sealed record SetupContext(
     InstallPaths Paths,
     IElevation Elevation,
     TextWriter Out,
-    ILogger Log)
+    ILogger Log,
+    IRunKey RunKey)
 {
     /// <summary>False in tests, which run as a normal user and cannot use the SYSTEM/Administrators-only ACL on the key file.</summary>
     public bool ApplyKeyAcl { get; init; } = true;
@@ -19,7 +20,7 @@ public sealed record SetupContext(
     public static SetupContext CreateDefault()
     {
         var output = Console.Out;
-        return new SetupContext(new ProcessRunner(), InstallPaths.Default(), new WindowsElevation(), output, new SetupConsoleLogger(output))
+        return new SetupContext(new ProcessRunner(), InstallPaths.Default(), new WindowsElevation(), output, new SetupConsoleLogger(output), new HklmRunKey())
         {
             WaitForKey = () =>
             {

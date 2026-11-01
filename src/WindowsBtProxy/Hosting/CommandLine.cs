@@ -12,7 +12,8 @@ public static class CommandLine
         "  windows-bt-proxy service                                                            what the Windows service starts\n" +
         "  windows-bt-proxy status                                                             what the running service is doing\n" +
         "  windows-bt-proxy tray                                                               the notification-area icon (started at sign-in)\n" +
-        "  windows-bt-proxy install | uninstall [--keep-settings] | key show|rotate|clear      see the README\n" +
+        "  windows-bt-proxy install [--no-tray] | uninstall [--keep-settings]                  see the README\n" +
+        "  windows-bt-proxy key show|rotate|clear                                              see the README\n" +
         "  windows-bt-proxy version";
 
     /// <summary>

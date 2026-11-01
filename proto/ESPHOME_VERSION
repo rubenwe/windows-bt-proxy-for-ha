@@ -1,0 +1,13 @@
+Vendored ESPHome Native API protocol definitions
+=================================================
+Source repo : https://github.com/esphome/aioesphomeapi
+Tag         : v46.25.0
+Files       : aioesphomeapi/api.proto
+              aioesphomeapi/api_options.proto
+Raw URL     : https://raw.githubusercontent.com/esphome/aioesphomeapi/v46.25.0/aioesphomeapi/<file>
+Fetched     : 2026-11-01
+Why         : aioesphomeapi v46.25.0 is the client version already validated against the author's Home Assistant.
+Modified    : one mechanical rename so protoc's C# generator accepts the files: the empty message `void`
+              (api_options.proto) is renamed `Void`, and the 50 `returns (void)` in api.proto become `returns (Void)`.
+              `void` is a C# keyword and generates uncompilable code. The wire format is unchanged (empty message).
+              To upgrade, re-fetch both files from a newer tag, reapply the rename, and update this file.

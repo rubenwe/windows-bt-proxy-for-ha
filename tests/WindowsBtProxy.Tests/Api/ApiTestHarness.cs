@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using Google.Protobuf;
-using Microsoft.Extensions.Logging.Abstractions;
 using WindowsBtProxy.Api;
 using WindowsBtProxy.Api.Framing;
 using WindowsBtProxy.Api.Proto;
@@ -11,14 +10,14 @@ using WindowsBtProxy.Crypto;
 
 namespace WindowsBtProxy.Tests.Api;
 
-/// <summary>A running server on an ephemeral loopback port plus a fake source.</summary>
+/// <summary>A running server on an ephemeral loopback port plus a fake (or caller-supplied) source.</summary>
 internal sealed class Harness : IAsyncDisposable
 {
     private readonly CancellationTokenSource _cts = new();
-    private readonly FakeAdvertisementSource _source;
+    private readonly IAdvertisementSource _source;
     private Task _run = Task.CompletedTask;
 
-    private Harness(ApiServer server, FakeAdvertisementSource source)
+    private Harness(ApiServer server, IAdvertisementSource source)
     {
         Server = server;
         _source = source;
@@ -26,16 +25,24 @@ internal sealed class Harness : IAsyncDisposable
 
     public ApiServer Server { get; }
 
-    public static async Task<Harness> StartAsync(bool startSource = false, EncryptionState? encryption = null, TimeSpan? handshakeTimeout = null)
+    /// <summary>What the server logged.</summary>
+    public ListLogger Log { get; private init; } = new();
+
+    public static async Task<Harness> StartAsync(
+        bool startSource = false,
+        EncryptionState? encryption = null,
+        TimeSpan? handshakeTimeout = null,
+        IAdvertisementSource? source = null)
     {
-        var source = new FakeAdvertisementSource(TimeSpan.FromMilliseconds(20));
+        var logger = new ListLogger();
+        source ??= new FakeAdvertisementSource(TimeSpan.FromMilliseconds(20));
         var identity = new DeviceIdentity("windows-bt-proxy-334455", "Windows Bluetooth Proxy", 0x021122334455, "TESTPC", "Nov  1 2026, 12:00:00");
-        var server = new ApiServer(new IPEndPoint(IPAddress.Loopback, 0), identity, source, encryption ?? EncryptionState.InMemory(), NullLogger<ApiServer>.Instance, TimeProvider.System);
+        var server = new ApiServer(new IPEndPoint(IPAddress.Loopback, 0), identity, source, encryption ?? EncryptionState.InMemory(), logger, TimeProvider.System);
         if (handshakeTimeout is { } timeout)
         {
             server.HandshakeTimeout = timeout;
         }
-        var h = new Harness(server, source);
+        var h = new Harness(server, source) { Log = logger };
         h._run = server.RunAsync(h._cts.Token); // binds the listener before its first await, so LocalEndpoint is valid right away
         if (startSource)
         {
@@ -48,9 +55,9 @@ internal sealed class Harness : IAsyncDisposable
     public TestClient Connect() => new(Server.LocalEndpoint);
 
     /// <summary>A Noise client that completed the handshake with <paramref name="psk"/>; fails the test if the server rejects it.</summary>
-    public async Task<TestClient> ConnectNoiseAsync(ReadOnlyMemory<byte> psk)
+    public async Task<TestClient> ConnectNoiseAsync(ReadOnlyMemory<byte> psk, int? receiveBufferSize = null)
     {
-        var c = new TestClient(Server.LocalEndpoint);
+        var c = new TestClient(Server.LocalEndpoint, receiveBufferSize);
         var reject = await c.NoiseHandshakeAsync(psk);
         Assert.Null(reject);
         return c;
@@ -73,8 +80,13 @@ internal sealed class TestClient : IAsyncDisposable
     private readonly NetworkStream _stream;
     private IFrameCodec _codec;
 
-    public TestClient(IPEndPoint server)
+    /// <param name="receiveBufferSize">Set before connecting, so a client that stops reading backs the server up quickly.</param>
+    public TestClient(IPEndPoint server, int? receiveBufferSize = null)
     {
+        if (receiveBufferSize is { } size)
+        {
+            _tcp.ReceiveBufferSize = size;
+        }
         _tcp.Connect(server);
         _stream = _tcp.GetStream();
         _codec = new PlaintextFrameCodec(_stream);

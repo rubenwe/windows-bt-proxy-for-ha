@@ -96,13 +96,16 @@ public sealed class ApiServer(
         }
     }
 
-    /// <summary>After a client provisioned the key: close every session that was not opened with it.</summary>
-    private void CloseUnkeyedSessions()
+    /// <summary>
+    /// Right after <paramref name="provisioner"/> provisioned the key: close every other session that was not opened with it.
+    /// The provisioner closes itself once it has answered.
+    /// </summary>
+    private void CloseOtherUnkeyedSessions(ApiConnection provisioner)
     {
         foreach (var connection in _connections.Keys)
         {
             // Sessions still negotiating re-check HasKey once their mode is published (see ApiConnection.NegotiateAsync).
-            if (connection.Mode is TransportMode.Plaintext or TransportMode.ZeroPskNoise)
+            if (connection != provisioner && connection.Mode is TransportMode.Plaintext or TransportMode.ZeroPskNoise)
             {
                 connection.Cancel();
             }
@@ -120,7 +123,7 @@ public sealed class ApiServer(
             remote = client.Client.RemoteEndPoint as IPEndPoint ?? remote;
             client.NoDelay = true;
             EnableKeepAlive(client.Client, remote);
-            connection = new ApiConnection(client, remote, identity, encryption, log, time, HandshakeTimeout, RaiseClientsChanged, CloseUnkeyedSessions);
+            connection = new ApiConnection(client, remote, identity, encryption, log, time, HandshakeTimeout, RaiseClientsChanged, CloseOtherUnkeyedSessions);
             _connections[connection] = 0;
             log.LogInformation("Client {Remote} connected", remote);
             RaiseClientsChanged();

@@ -29,6 +29,12 @@ internal sealed class ApiConnection : IAsyncDisposable
     /// <summary>How long a gracefully closing connection waits for the client to close its side (see <see cref="CloseGracefullyAsync"/>).</summary>
     private static readonly TimeSpan LingerTimeout = TimeSpan.FromSeconds(1);
 
+    /// <summary>
+    /// How long the provisioning client's success answer may take to write. That session is unkeyed, so it must not outlive
+    /// the key for long; a client that stopped reading would otherwise keep it open indefinitely.
+    /// </summary>
+    private static readonly TimeSpan ProvisioningAnswerTimeout = TimeSpan.FromSeconds(2);
+
     private static readonly string ServerInfo = "windows-bt-proxy " +
         (typeof(ApiConnection).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown");
 
@@ -38,7 +44,7 @@ internal sealed class ApiConnection : IAsyncDisposable
     private readonly ILogger _log;
     private readonly TimeProvider _time;
     private readonly Action _changed;
-    private readonly Action _keyProvisioned;
+    private readonly Action<ApiConnection> _closeOtherUnkeyedSessions;
     private readonly TimeSpan _handshakeTimeout;
     private readonly NetworkStream _stream;
     private readonly CancellationTokenSource _lifetime = new();
@@ -48,7 +54,7 @@ internal sealed class ApiConnection : IAsyncDisposable
     private string _clientInfoText = "";
     private int _disposed;
 
-    /// <param name="keyProvisioned">Called after this client provisioned the key and got its answer; closes every plaintext and zero-PSK session.</param>
+    /// <param name="closeOtherUnkeyedSessions">Called as soon as this client provisioned the key: closes every other plaintext and zero-PSK session.</param>
     public ApiConnection(
         TcpClient tcp,
         IPEndPoint remote,
@@ -58,7 +64,7 @@ internal sealed class ApiConnection : IAsyncDisposable
         TimeProvider time,
         TimeSpan handshakeTimeout,
         Action changed,
-        Action keyProvisioned)
+        Action<ApiConnection> closeOtherUnkeyedSessions)
     {
         _tcp = tcp;
         Remote = remote;
@@ -68,7 +74,7 @@ internal sealed class ApiConnection : IAsyncDisposable
         _time = time;
         _handshakeTimeout = handshakeTimeout;
         _changed = changed;
-        _keyProvisioned = keyProvisioned;
+        _closeOtherUnkeyedSessions = closeOtherUnkeyedSessions;
         _stream = tcp.GetStream();
     }
 
@@ -271,7 +277,11 @@ internal sealed class ApiConnection : IAsyncDisposable
         }
     }
 
-    /// <summary>Home Assistant's provisioning request. On success the answer goes out first, then every unkeyed session (this one too) closes.</summary>
+    /// <summary>
+    /// Home Assistant's provisioning request. On success every other unkeyed session is closed at once, before anything
+    /// that could fail or block; this session then gets its answer (bounded by <see cref="ProvisioningAnswerTimeout"/>) and
+    /// closes too, whether or not the answer could be written.
+    /// </summary>
     private async ValueTask<bool> SetKeyAsync(NoiseEncryptionSetKeyRequest request, CancellationToken ct)
     {
         var mode = Mode;
@@ -296,13 +306,33 @@ internal sealed class ApiConnection : IAsyncDisposable
             _log.LogWarning("Refused an encryption key from client {Remote} ({Mode} session, key already set: {HasKey})", Remote, mode, _encryption.HasKey);
         }
 
-        await Codec.WriteAsync(MessageIds.NoiseEncryptionSetKeyResponse, new NoiseEncryptionSetKeyResponse { Success = success }, ct).ConfigureAwait(false);
         if (!success)
         {
+            await Codec.WriteAsync(MessageIds.NoiseEncryptionSetKeyResponse, new NoiseEncryptionSetKeyResponse { Success = false }, ct).ConfigureAwait(false);
             return true;
         }
-        _keyProvisioned();
-        return false;
+
+        // The key is in effect: no other plaintext or zero-PSK session may keep being served, whatever happens below.
+        _closeOtherUnkeyedSessions(this);
+        try
+        {
+            using var bound = new CancellationTokenSource(ProvisioningAnswerTimeout, _time);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, bound.Token);
+            try
+            {
+                await Codec.WriteAsync(MessageIds.NoiseEncryptionSetKeyResponse, new NoiseEncryptionSetKeyResponse { Success = true }, linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (bound.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                throw new TimeoutException($"the provisioning answer could not be written within {ProvisioningAnswerTimeout.TotalSeconds:0.#} s");
+            }
+            return false; // answered: close gracefully so the answer is not lost
+        }
+        finally
+        {
+            // This session is unkeyed too: it ends on every path, including a failed or timed-out answer.
+            Cancel();
+        }
     }
 
     private void Subscribe()

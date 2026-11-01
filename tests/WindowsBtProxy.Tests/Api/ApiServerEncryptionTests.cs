@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text;
+using Google.Protobuf;
 using WindowsBtProxy.Api.Proto;
+using WindowsBtProxy.Ble;
 using WindowsBtProxy.Crypto;
 
 namespace WindowsBtProxy.Tests.Api;
@@ -117,6 +120,57 @@ public sealed class ApiServerEncryptionTests : IDisposable
     }
 
     [Fact]
+    public async Task Provisioning_client_that_resets_before_the_answer_still_closes_other_unkeyed_sessions()
+    {
+        var state = EncryptionState.Load(Store);
+        await using var h = await Harness.StartAsync(encryption: state);
+        await using var plain = h.Connect();
+        await plain.HelloAsync();
+        var adopter = await h.ConnectNoiseAsync(ZeroPsk);
+        // KeyChanged runs on the provisioning connection after the key took effect and before the answer is written:
+        // reset the client there, so writing the answer fails.
+        state.KeyChanged += () =>
+        {
+            adopter.Abort();
+            Thread.Sleep(200); // let the RST reach the server socket
+        };
+
+        await adopter.SendAsync(SetKeyRequest(RandomNumberGenerator.GetBytes(32)));
+
+        Assert.Null(await plain.ReceiveOrEofAsync());
+        Assert.True(state.HasKey);
+        await TestClient.WaitUntilAsync(() => h.Server.Clients.Count == 0);
+    }
+
+    [Fact]
+    public async Task Provisioning_client_that_stopped_reading_cannot_delay_closing_unkeyed_sessions()
+    {
+        await using var source = new FloodSource();
+        await using var h = await Harness.StartAsync(encryption: EncryptionState.Load(Store), source: source);
+        await using var plain = h.Connect();
+        await plain.HelloAsync();
+        await using var adopter = await h.ConnectNoiseAsync(ZeroPsk, receiveBufferSize: 1024);
+        await adopter.SendAsync(new SubscribeBluetoothLEAdvertisementsRequest());
+        await TestClient.WaitUntilAsync(() => h.Server.Clients.Any(c => c.Subscribed));
+
+        // The adopter never reads, so the server's advertisement flush to it blocks inside the codec's write lock.
+        using var flood = new CancellationTokenSource();
+        var pumping = Task.Run(() => source.Flood(flood.Token), CancellationToken.None);
+        await source.WaitForBacklogAsync();
+        await adopter.SendAsync(SetKeyRequest(RandomNumberGenerator.GetBytes(32)));
+
+        var watch = Stopwatch.StartNew();
+        Assert.Null(await plain.ReceiveOrEofAsync());
+        Assert.InRange(watch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(1)); // not held up by the stuck answer
+        // The adopter itself is unkeyed: it is dropped once its answer cannot be written within the bound.
+        await TestClient.WaitUntilAsync(() => h.Server.Clients.Count == 0, TimeSpan.FromSeconds(5));
+        Assert.Contains(h.Log.Lines, l => l.Contains("provisioning answer", StringComparison.Ordinal));
+
+        await flood.CancelAsync();
+        await pumping;
+    }
+
+    [Fact]
     public async Task Set_key_is_refused_on_a_plaintext_session_which_stays_open()
     {
         var state = EncryptionState.Load(Store);
@@ -220,11 +274,48 @@ public sealed class ApiServerEncryptionTests : IDisposable
         return key;
     }
 
-    private static async Task<Google.Protobuf.IMessage> Ping(TestClient c)
+    private static NoiseEncryptionSetKeyRequest SetKeyRequest(byte[] key) =>
+        new() { Key = ByteString.CopyFrom(Encoding.ASCII.GetBytes(Convert.ToBase64String(key))) };
+
+    private static async Task<IMessage> Ping(TestClient c)
     {
         await c.SendAsync(new PingRequest());
         return await c.ReceiveAsync();
     }
 
     public void Dispose() => Directory.Delete(_dir, recursive: true);
+
+    /// <summary>Raises full-size advertisements as fast as it can, to back up a subscriber that does not read.</summary>
+    private sealed class FloodSource : IAdvertisementSource
+    {
+        private static readonly byte[] Data = [.. Enumerable.Range(0, 62).Select(i => (byte)i)];
+        private long _raised;
+
+        public event Action<RawAdvertisement>? Received;
+
+        public event Action<ScannerStatus>? StatusChanged { add { } remove { } }
+
+        public ScannerStatus Status => ScannerStatus.Running;
+
+        public ulong AdapterAddress => 0x021122334455;
+
+        public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
+
+        public void Flood(CancellationToken ct)
+        {
+            for (ulong address = 1; !ct.IsCancellationRequested; address++)
+            {
+                Received?.Invoke(new RawAdvertisement(address, -60, 0, Data));
+                Interlocked.Increment(ref _raised);
+            }
+        }
+
+        /// <summary>
+        /// Waits until far more data was offered than loopback socket buffers hold (at ~1.4 KB per 16-ad frame, 200 000 ads
+        /// are ~17 MB). The batcher drops the oldest ads when its writer is stuck, so the source never waits.
+        /// </summary>
+        public Task WaitForBacklogAsync() => TestClient.WaitUntilAsync(() => Interlocked.Read(ref _raised) > 200_000, TimeSpan.FromSeconds(10));
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 }

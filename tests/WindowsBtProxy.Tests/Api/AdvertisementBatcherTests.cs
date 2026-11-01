@@ -107,40 +107,100 @@ public class AdvertisementBatcherTests
         var time = new FakeTimeProvider();
         var sink = new Sink(blocked: true);
         await using var batcher = new AdvertisementBatcher(sink.Flush, time);
+        try
+        {
+            // Park the reader inside a blocked flush holding ads 0..15, so the queue itself is empty.
+            for (var i = 0; i < 16; i++) batcher.Enqueue(Ad(i));
+            var held = await sink.NextAsync();
+            Assert.Equal(16, held.Count);
 
-        // Park the reader inside a blocked flush holding ads 0..15, so the queue itself is empty.
-        for (var i = 0; i < 16; i++) batcher.Enqueue(Ad(i));
-        var held = await sink.NextAsync();
-        Assert.Equal(16, held.Count);
+            // 1030 more into a 1024-deep queue: the oldest overflow.
+            const int total = 16 + 1030;
+            for (var i = 16; i < total; i++) batcher.Enqueue(Ad(i));
+            Assert.InRange(batcher.Dropped, 6, 22);
 
-        // 1030 more into a 1024-deep queue: the oldest overflow.
-        const int total = 16 + 1030;
-        for (var i = 16; i < total; i++) batcher.Enqueue(Ad(i));
-        Assert.InRange(batcher.Dropped, 6, 22);
+            sink.Release();
+            var flushed = held.ToList();
+            while (flushed.Count + batcher.Dropped < total) flushed.AddRange(await sink.NextAsync());
 
-        sink.Release();
-        var flushed = held.ToList();
-        while (flushed.Count + batcher.Dropped < total) flushed.AddRange(await sink.NextAsync());
+            Assert.Equal(total, flushed.Count + batcher.Dropped);
+            var addresses = flushed.Select(a => a.Address).ToList();
+            Assert.Contains((ulong)(total - 1), addresses);          // newest survived and was flushed
+            Assert.DoesNotContain((ulong)16, addresses);             // oldest queued ad was the one dropped
+            Assert.Equal(addresses.Order(), addresses);              // order preserved
+        }
+        finally
+        {
+            sink.Release(); // a failed assertion must not leave a flush blocked, or DisposeAsync would hang the test host
+        }
+    }
 
-        Assert.Equal(total, flushed.Count + batcher.Dropped);
-        var addresses = flushed.Select(a => a.Address).ToList();
-        Assert.Contains((ulong)(total - 1), addresses);          // newest survived and was flushed
-        Assert.DoesNotContain((ulong)16, addresses);             // oldest queued ad was the one dropped
-        Assert.Equal(addresses.Order(), addresses);              // order preserved
+    /// <summary>Wraps a <see cref="FakeTimeProvider"/> and signals when the batcher arms a timer (i.e. its reader is waiting out a partial batch).</summary>
+    private sealed class TimerSignalingTimeProvider(FakeTimeProvider inner) : TimeProvider
+    {
+        private readonly TaskCompletionSource _timerCreated = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task TimerCreated => _timerCreated.Task;
+
+        public override long GetTimestamp() => inner.GetTimestamp();
+
+        public override long TimestampFrequency => inner.TimestampFrequency;
+
+        public override DateTimeOffset GetUtcNow() => inner.GetUtcNow();
+
+        public override TimeZoneInfo LocalTimeZone => inner.LocalTimeZone;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = inner.CreateTimer(callback, state, dueTime, period);
+            _timerCreated.TrySetResult();
+            return timer;
+        }
     }
 
     [Fact]
-    public async Task Dispose_stops_the_batcher_even_with_pending_ads()
+    public async Task Dispose_drops_a_partial_batch_instead_of_flushing_it()
     {
-        var time = new FakeTimeProvider();
+        var fake = new FakeTimeProvider();
+        var time = new TimerSignalingTimeProvider(fake);
         var sink = new Sink();
         var batcher = new AdvertisementBatcher(sink.Flush, time);
-        batcher.Enqueue(Ad(1));
+
+        for (var i = 0; i < 3; i++) batcher.Enqueue(Ad(i));
+        await time.TimerCreated.WaitAsync(Timeout, TestContext.Current.CancellationToken); // reader is now parked holding a partial batch
 
         await batcher.DisposeAsync().AsTask().WaitAsync(Timeout, TestContext.Current.CancellationToken);
-        time.Advance(Interval * 5);
-        batcher.Enqueue(Ad(2)); // must not throw after dispose
+        fake.Advance(Interval * 5);
+        batcher.Enqueue(Ad(9)); // must not throw after dispose
 
         Assert.False(sink.TryNext(out _));
+        Assert.True(batcher.Completion.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Dispose_is_idempotent()
+    {
+        var batcher = new AdvertisementBatcher(new Sink().Flush, new FakeTimeProvider());
+
+        await batcher.DisposeAsync();
+        await batcher.DisposeAsync();
+
+        Assert.True(batcher.Completion.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task A_throwing_flush_faults_Completion_stops_queueing_and_dispose_does_not_throw()
+    {
+        var time = new FakeTimeProvider();
+        var batcher = new AdvertisementBatcher(_ => throw new InvalidOperationException("transport closed"), time);
+
+        for (var i = 0; i < 16; i++) batcher.Enqueue(Ad(i));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => batcher.Completion.WaitAsync(Timeout, TestContext.Current.CancellationToken));
+        Assert.Equal("transport closed", ex.Message);
+
+        for (var i = 0; i < 2000; i++) batcher.Enqueue(Ad(i)); // more than the queue holds
+        Assert.Equal(0, batcher.Dropped); // ignored, not queued
+
+        await batcher.DisposeAsync().AsTask().WaitAsync(Timeout, TestContext.Current.CancellationToken);
     }
 }

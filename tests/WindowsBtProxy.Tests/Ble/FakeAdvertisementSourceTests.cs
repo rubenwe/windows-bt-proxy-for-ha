@@ -68,4 +68,17 @@ public class FakeAdvertisementSourceTests
 
         Assert.Equal(0, Volatile.Read(ref count));
     }
+
+    [Fact]
+    public async Task Dispose_is_idempotent_and_safe_before_start()
+    {
+        var source = new FakeAdvertisementSource(Interval, new FakeTimeProvider());
+        await source.DisposeAsync();
+        await source.DisposeAsync();
+
+        var started = new FakeAdvertisementSource(Interval, new FakeTimeProvider());
+        await started.StartAsync(CancellationToken.None);
+        await started.DisposeAsync();
+        await started.DisposeAsync();
+    }
 }

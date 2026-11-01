@@ -8,6 +8,7 @@ public sealed class FakeAdvertisementSource : IAdvertisementSource
     private readonly CancellationTokenSource _stop = new();
     private PeriodicTimer? _timer;
     private Task? _loop;
+    private int _disposed;
     private int _status = (int)ScannerStatus.Starting;
 
     public FakeAdvertisementSource(TimeSpan interval, TimeProvider? time = null)
@@ -63,6 +64,8 @@ public sealed class FakeAdvertisementSource : IAdvertisementSource
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
         await _stop.CancelAsync().ConfigureAwait(false);
         _timer?.Dispose();
         if (_loop is not null) await _loop.ConfigureAwait(false);

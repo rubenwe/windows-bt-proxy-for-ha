@@ -104,4 +104,8 @@ Two defects showed up only against the real HA, both fixed:
 
 The radio-off check showed one wart: switching the radio off stops the watcher with `Success` about half a second before
 `Radio.StateChanged`, so the scanner briefly reported `Failed`. An unexpected stop is now reported as `RadioOff` when the
-radio is not on (not yet re-checked on hardware). Still open: a second PC (discovery of a device HA has not seen).
+radio is not on (not yet re-checked on hardware).
+
+**Second PC, from the 0.1.0 release.** A Surface laptop, installed from the published release zip, appeared under
+*Discovered* in Home Assistant on its own and was added from there (config entry source `zeroconf`); HA provisioned its key
+and created its Bluetooth scanner entry, with no repairs. Discovery of a device HA has not seen before works.

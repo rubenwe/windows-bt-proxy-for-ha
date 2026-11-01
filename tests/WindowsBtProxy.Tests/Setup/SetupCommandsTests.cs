@@ -8,8 +8,8 @@ public sealed class SetupCommandsTests : IDisposable
     private readonly FakeProcessRunner _runner = new();
     private readonly StringWriter _output = new();
 
-    private Task<int> Run(string[] args, bool elevated = true, FakeElevation? elevation = null)
-        => SetupCommands.RunAsync(args, _box.Context(_runner, _output, elevated, elevation: elevation), CancellationToken.None);
+    private Task<int> Run(string[] args, bool elevated = true, FakeElevation? elevation = null, FakeRunKey? runKey = null)
+        => SetupCommands.RunAsync(args, _box.Context(_runner, _output, elevated, elevation: elevation, runKey: runKey), CancellationToken.None);
 
     [Theory]
     [InlineData]
@@ -197,12 +197,74 @@ public sealed class SetupCommandsTests : IDisposable
     public async Task Non_elevated_install_starts_tray_after_elevated_child_succeeds()
     {
         var elevation = new FakeElevation(elevated: false) { RelaunchExitCode = 0 };
+        var runKey = new FakeRunKey { Value = Installer.TrayCommandLine(Path.Combine(_box.ProgramDir, "windows-bt-proxy.exe")) }; // written by the child
 
-        var code = await Run(["install"], elevation: elevation);
+        var code = await Run(["install"], elevation: elevation, runKey: runKey);
 
         Assert.Equal(0, code);
-        Assert.Equal([TrayStart], _runner.Detached);
+        Assert.Equal([TrayStart], _runner.ShellStarts);
+        Assert.Empty(_runner.Detached); // a CreateProcess child would inherit install's handles and hold a captured stdout open until sign-out
     }
+
+    [Theory]
+    [MemberData(nameof(TrayStartFailures))]
+    public async Task Install_that_cannot_start_the_tray_still_succeeds_with_a_warning(Exception failure)
+    {
+        _runner.ThrowOnShellStart = failure;
+
+        var code = await Run(["install"]);
+
+        Assert.Equal(0, code);
+        Assert.Equal([TrayStart], _runner.ShellStarts);
+        Assert.Contains($"warning: Could not start the tray icon now; it starts at the next sign-in. ({failure.Message})", _output.ToString());
+        Assert.DoesNotContain("Started the tray icon.", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Non_elevated_install_does_not_start_a_tray_when_the_child_could_not_add_the_autostart_entry()
+    {
+        // Such a tray would quit at its first lifecycle check.
+        var elevation = new FakeElevation(elevated: false) { RelaunchExitCode = 0 };
+
+        var code = await Run(["install"], elevation: elevation, runKey: new FakeRunKey());
+
+        Assert.Equal(0, code);
+        Assert.Empty(_runner.ShellStarts);
+        Assert.Contains("warning: Not starting the tray icon: its autostart entry is missing.", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Elevated_install_whose_autostart_entry_is_refused_still_succeeds_and_starts_no_tray()
+    {
+        var runKey = new FakeRunKey { ThrowOnChange = new UnauthorizedAccessException("Access to the registry key is denied.") };
+
+        var code = await Run(["install"], runKey: runKey);
+
+        Assert.Equal(0, code);
+        Assert.Contains("sc.exe start WindowsBtProxyForHA", _runner.Commands);
+        Assert.Empty(_runner.ShellStarts);
+    }
+
+    [Fact]
+    public async Task Install_starts_the_tray_when_the_autostart_entry_cannot_be_read()
+    {
+        // The tray's own rule: an unreadable value counts as present.
+        var runKey = new FakeRunKey { ThrowOnRead = new System.Security.SecurityException("Requested registry access is not allowed.") };
+
+        var code = await Run(["install"], runKey: runKey);
+
+        Assert.Equal(0, code);
+        Assert.Equal([TrayStart], _runner.ShellStarts);
+    }
+
+    public static TheoryData<Exception> TrayStartFailures => new()
+    {
+        new System.ComponentModel.Win32Exception(1223, "The operation was canceled by the user"),
+        new InvalidOperationException("No file name was specified."),
+        new FileNotFoundException("The installed program is missing."),
+        new UnauthorizedAccessException("Access is denied."),
+        new PlatformNotSupportedException("Not here."),
+    };
 
     [Theory]
     [InlineData(1)]
@@ -213,7 +275,7 @@ public sealed class SetupCommandsTests : IDisposable
 
         await Run(["install"], elevation: elevation);
 
-        Assert.Empty(_runner.Detached);
+        Assert.Empty(_runner.ShellStarts);
     }
 
     [Fact]
@@ -224,7 +286,8 @@ public sealed class SetupCommandsTests : IDisposable
         var code = await SetupCommands.RunAsync(["install"], _box.Context(_runner, _output, runKey: runKey), CancellationToken.None);
 
         Assert.Equal(0, code);
-        Assert.Equal([TrayStart], _runner.Detached);
+        Assert.Equal([TrayStart], _runner.ShellStarts);
+        Assert.Empty(_runner.Detached);
         Assert.NotNull(runKey.Value);
     }
 
@@ -236,7 +299,7 @@ public sealed class SetupCommandsTests : IDisposable
         var code = await Run(["install"]);
 
         Assert.Equal(1, code);
-        Assert.Empty(_runner.Detached);
+        Assert.Empty(_runner.ShellStarts);
     }
 
     [Fact]
@@ -248,7 +311,7 @@ public sealed class SetupCommandsTests : IDisposable
         var code = await SetupCommands.RunAsync(["install", "--relaunched"], context, CancellationToken.None);
 
         Assert.Equal(0, code);
-        Assert.Empty(_runner.Detached); // the waiting parent starts it, as the user rather than as administrator
+        Assert.Empty(_runner.ShellStarts); // the waiting parent starts it, as the user rather than as administrator
         Assert.NotNull(runKey.Value);
     }
 
@@ -261,7 +324,7 @@ public sealed class SetupCommandsTests : IDisposable
 
         Assert.Equal(0, code);
         Assert.Equal(["install", "--no-tray"], Assert.Single(elevation.Relaunches));
-        Assert.Empty(_runner.Detached);
+        Assert.Empty(_runner.ShellStarts);
     }
 
     [Fact]
@@ -273,7 +336,7 @@ public sealed class SetupCommandsTests : IDisposable
 
         Assert.Equal(0, code);
         Assert.Equal(["Delete"], runKey.Calls);
-        Assert.Empty(_runner.Detached);
+        Assert.Empty(_runner.ShellStarts);
     }
 
     [Fact]

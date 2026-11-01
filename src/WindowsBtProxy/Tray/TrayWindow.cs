@@ -275,7 +275,7 @@ internal sealed unsafe class TrayWindow : IDisposable
         }
         catch (Win32Exception e)
         {
-            Debug.WriteLine($"tray: could not open the log folder: {e.Message}");
+            DebugOutput.Write($"tray: could not open the log folder: {e.Message}");
         }
     }
 
@@ -313,7 +313,7 @@ internal sealed unsafe class TrayWindow : IDisposable
         catch (Exception e)
         {
             // An exception must never unwind into user32: it would take the process down.
-            Debug.WriteLine($"tray window: {e}");
+            DebugOutput.Write($"tray window: {e}");
         }
         return Native.DefWindowProcW(hwnd, message, wParam, lParam);
     }
@@ -354,7 +354,7 @@ internal sealed unsafe class TrayWindow : IDisposable
                     catch (Exception e)
                     {
                         // One failed piece of work must not strand the rest of the queue until the next post.
-                        Debug.WriteLine($"tray window: {e}");
+                        DebugOutput.Write($"tray window: {e}");
                     }
                 }
                 return 0;

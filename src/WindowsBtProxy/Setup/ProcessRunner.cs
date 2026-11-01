@@ -66,12 +66,32 @@ public sealed class ProcessRunner : IProcessRunner
 
     public void StartDetached(string exe, string args)
     {
-        // Not redirected and not waited for: the child must keep running after this process exits. It may live until logoff (the tray),
-        // so it starts in the system folder: a current folder inherited from here would stay locked, even against the removal helper's rmdir.
+        // Not redirected and not waited for: the child must keep running after this process exits. It starts in the system folder: a
+        // current folder inherited from here would stay locked, even against the removal helper's own rmdir.
         var info = CreateStartInfo(exe, args);
         info.WorkingDirectory = Environment.SystemDirectory;
         using var process = Process.Start(info);
     }
+
+    public void StartShell(string exe, string args) => StartShellDetached(exe, args);
+
+    /// <summary>
+    /// The one way a tray gets started from code (install, and a tray restarting into an upgraded exe), matching the Run value at logon.
+    /// ShellExecute hands the child none of this process's handles: a <c>CreateProcess</c> child (<c>UseShellExecute = false</c>) inherits
+    /// every inheritable one, so a tray started by <c>$x = &amp; exe install</c> would keep the captured stdout open until sign-out and the
+    /// caller would never finish. The system folder as working directory keeps the tray from locking the folder it was started from.
+    /// </summary>
+    /// <exception cref="System.ComponentModel.Win32Exception">The program could not be started.</exception>
+    public static void StartShellDetached(string exe, string args)
+    {
+        using var process = Process.Start(ShellStartInfo(exe, args));
+    }
+
+    internal static ProcessStartInfo ShellStartInfo(string exe, string args) => new(Resolve(exe), args)
+    {
+        UseShellExecute = true,
+        WorkingDirectory = Environment.SystemDirectory,
+    };
 
     /// <summary>The last <see cref="OutputTailLines"/> non-blank lines.</summary>
     internal static string Tail(string text)

@@ -1,4 +1,4 @@
-using System.ComponentModel;
+using System.Security;
 using Microsoft.Extensions.Logging;
 using WindowsBtProxy.Crypto;
 
@@ -128,18 +128,40 @@ public static class SetupCommands
         return code.Value;
     }
 
-    /// <summary>Starts the installed tray now rather than at the next sign-in. A failure is only a note: the install itself worked.</summary>
+    /// <summary>
+    /// Starts the installed tray now rather than at the next sign-in, through ShellExecute like the Run value, so it inherits none of this
+    /// process's handles (see <see cref="ProcessRunner.StartShellDetached"/>). Whatever goes wrong is only a warning: the install itself worked.
+    /// </summary>
     private static void StartTray(SetupContext context)
     {
         try
         {
-            context.Runner.StartDetached(context.Paths.ExePath, "tray");
+            // Install goes on without the autostart value when the registry refuses it, and a tray without that value quits at its first
+            // lifecycle check: starting one would only show an icon that vanishes within 30 s. The elevated install already said why.
+            if (AutostartMissing(context.RunKey))
+            {
+                context.Log.LogWarning("Not starting the tray icon: its autostart entry is missing.");
+                return;
+            }
+            context.Runner.StartShell(context.Paths.ExePath, "tray");
             context.Out.WriteLine("Started the tray icon.");
         }
-        catch (Exception e) when (e is Win32Exception or InvalidOperationException)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
-            context.Log.LogDebug(e, "Could not start the tray.");
-            context.Out.WriteLine($"Could not start the tray icon ({e.Message}); it starts at the next sign-in.");
+            context.Log.LogWarning(e, "Could not start the tray icon now; it starts at the next sign-in.");
+        }
+    }
+
+    /// <summary>The tray's own rule: a value that cannot be read counts as present.</summary>
+    private static bool AutostartMissing(IRunKey runKey)
+    {
+        try
+        {
+            return runKey.Read() is null;
+        }
+        catch (Exception e) when (e is IOException or SecurityException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 

@@ -71,4 +71,18 @@ public sealed class ProcessRunnerTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    [Fact]
+    public void Shell_starts_go_through_ShellExecute_in_the_system_folder()
+    {
+        // ShellExecute passes no handles, so a tray started by a scripted install cannot hold the caller's captured output open until
+        // sign-out (CreateProcess, used when UseShellExecute is false, inherits every inheritable handle). Same as the Run value at logon.
+        var info = ProcessRunner.ShellStartInfo(@"C:\Program Files\WindowsBtProxyForHA\windows-bt-proxy.exe", "tray");
+
+        Assert.True(info.UseShellExecute);
+        Assert.Equal(@"C:\Program Files\WindowsBtProxyForHA\windows-bt-proxy.exe", info.FileName);
+        Assert.Equal("tray", info.Arguments);
+        Assert.Equal(Environment.SystemDirectory, info.WorkingDirectory);
+        Assert.False(info.RedirectStandardOutput || info.RedirectStandardError || info.RedirectStandardInput);
+    }
 }

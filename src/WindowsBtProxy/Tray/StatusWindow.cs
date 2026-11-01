@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace WindowsBtProxy.Tray;
@@ -241,7 +240,7 @@ internal sealed unsafe class StatusWindow
         catch (Exception e)
         {
             // An exception must never unwind into user32: it would take the process down.
-            Debug.WriteLine($"status window: {e}");
+            DebugOutput.Write($"status window: {e}");
         }
         return Native.DefWindowProcW(hwnd, message, wParam, lParam);
     }

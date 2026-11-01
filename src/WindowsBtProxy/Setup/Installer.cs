@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Globalization;
+using System.Security;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using WindowsBtProxy.Config;
@@ -109,14 +110,25 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
             ct);
         log.LogInformation("Firewall rule \"{Rule}\" allows inbound TCP {Port} on Private and Domain networks.", ruleName, port);
 
+        // The tray is optional: a refused registry change (security software, Group Policy) must not keep a just-stopped service down.
         if (tray)
         {
-            runKey.Write(TrayCommandLine(exe));
-            log.LogInformation("The tray icon starts at every sign-in.");
+            try
+            {
+                runKey.Write(TrayCommandLine(exe));
+                log.LogInformation("The tray icon starts at every sign-in.");
+            }
+            catch (Exception e) when (IsRegistryRefusal(e))
+            {
+                log.LogWarning(
+                    e,
+                    "Could not add the tray icon's autostart entry (value {Value} under HKLM\\{Key}), so the tray icon will not start at sign-in. The service is not affected.",
+                    HklmRunKey.ValueName,
+                    HklmRunKey.KeyPath);
+            }
         }
-        else
+        else if (TryDeleteRunValue("or the tray icon keeps starting at sign-in"))
         {
-            runKey.Delete();
             log.LogInformation("The tray icon does not start at sign-in (--no-tray).");
         }
 
@@ -164,7 +176,8 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
         }
 
         // Running trays notice the missing value within their 30 s lifecycle check and exit, which lets go of the program file.
-        runKey.Delete();
+        // Not removing it is no reason to leave the firewall rule and the files behind.
+        TryDeleteRunValue($"and quit any tray icon from its menu; if {paths.ProgramDir} is still there afterwards, delete it too");
 
         foreach (var rulePort in new[] { port, ProxySettings.DefaultPort }.Distinct())
         {
@@ -189,6 +202,29 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
             }
         }
     }
+
+    /// <summary>Removes the autostart value; a refusal is a warning that says what to remove by hand and <paramref name="otherwise"/>.</summary>
+    /// <returns>False when the value could not be removed.</returns>
+    private bool TryDeleteRunValue(string otherwise)
+    {
+        try
+        {
+            runKey.Delete();
+            return true;
+        }
+        catch (Exception e) when (IsRegistryRefusal(e))
+        {
+            log.LogWarning(
+                e,
+                "Could not remove the tray icon's autostart entry: delete the value {Value} under HKLM\\{Key} yourself, {Otherwise}.",
+                HklmRunKey.ValueName,
+                HklmRunKey.KeyPath,
+                otherwise);
+            return false;
+        }
+    }
+
+    private static bool IsRegistryRefusal(Exception e) => e is UnauthorizedAccessException or SecurityException or IOException;
 
     /// <returns>True when the existing program file was in use and had to be moved aside before copying.</returns>
     private async Task<bool> CopyProgramAsync(string source, string target, CancellationToken ct)

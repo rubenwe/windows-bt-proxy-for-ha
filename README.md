@@ -71,7 +71,7 @@ Add `--keep-settings` to keep the settings and key.
 
 ## Limits
 
-- Passive only: the proxy never connects to Bluetooth devices, it only forwards advertisements.
+- Advertisements only: the proxy never connects to Bluetooth devices, it only forwards what it hears.
 - It works only while the PC is on and awake.
 - Coverage is whatever this PC's Bluetooth radio can hear.
 

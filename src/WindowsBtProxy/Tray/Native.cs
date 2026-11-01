@@ -51,7 +51,11 @@ internal static unsafe partial class Native
     public const uint ES_MULTILINE = 0x0004;
     public const uint ES_AUTOVSCROLL = 0x0040;
     public const uint ES_READONLY = 0x0800;
+    public const uint BS_PUSHBUTTON = 0x0000;
     public const uint BS_DEFPUSHBUTTON = 0x0001;
+
+    /// <summary>The parent of a message-only window (an owner for the clipboard where there is no window).</summary>
+    public const nint HWND_MESSAGE = -3;
 
     // ShowWindow / SetWindowPos.
     public const int SW_SHOWNORMAL = 1;
@@ -80,6 +84,25 @@ internal static unsafe partial class Native
     public const uint MSGFLT_ALLOW = 1;
     public const int COLOR_BTNFACE = 15;
     public const int IDC_ARROW = 32512;
+
+    // MessageBox.
+    public const uint MB_OK = 0x0;
+    public const uint MB_YESNO = 0x4;
+    public const uint MB_ICONWARNING = 0x30;
+    public const uint MB_ICONINFORMATION = 0x40;
+    public const uint MB_SETFOREGROUND = 0x10000;
+    public const uint MB_TOPMOST = 0x40000;
+    public const int IDYES = 6;
+
+    // ShellExecuteEx.
+    public const uint SEE_MASK_NOASYNC = 0x100;
+    public const uint SEE_MASK_FLAG_NO_UI = 0x400;
+    public const int ERROR_CANCELLED = 1223;
+
+    // Clipboard and global memory.
+    public const uint CF_UNICODETEXT = 13;
+    public const uint GMEM_MOVEABLE = 0x0002;
+    public const uint GMEM_ZEROINIT = 0x0040;
 
     // GDI.
     public const uint BI_RGB = 0;
@@ -226,6 +249,30 @@ internal static unsafe partial class Native
         public LOGFONTW LfStatusFont;
         public LOGFONTW LfMessageFont;
         public int IPaddedBorderWidth;
+    }
+
+    /// <summary>
+    /// <c>SHELLEXECUTEINFOW</c>. Natural alignment, as shellapi.h packs it on 64-bit Windows (it packs to 1 byte only on 32-bit, which
+    /// this program does not target).
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SHELLEXECUTEINFOW
+    {
+        public uint CbSize;
+        public uint FMask;
+        public nint Hwnd;
+        public char* LpVerb;
+        public char* LpFile;
+        public char* LpParameters;
+        public char* LpDirectory;
+        public int NShow;
+        public nint HInstApp;
+        public nint LpIDList;
+        public char* LpClass;
+        public nint HkeyClass;
+        public uint DwHotKey;
+        public nint HIconOrMonitor;
+        public nint HProcess;
     }
 
     /// <summary>LOWORD, as the C macro: the low 16 bits, unsigned.</summary>
@@ -388,4 +435,52 @@ internal static unsafe partial class Native
     [LibraryImport("shell32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool Shell_NotifyIconW(uint message, in NOTIFYICONDATAW data);
+
+    [LibraryImport("shell32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool ShellExecuteExW(ref SHELLEXECUTEINFOW info);
+
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    public static partial int MessageBoxW(nint owner, string text, string caption, uint type);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool OpenClipboard(nint owner);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CloseClipboard();
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool EmptyClipboard();
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial nint SetClipboardData(uint format, nint data);
+
+    [LibraryImport("user32.dll")]
+    public static partial nint GetClipboardData(uint format);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool IsClipboardFormatAvailable(uint format);
+
+    [LibraryImport("user32.dll")]
+    public static partial int CountClipboardFormats();
+
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    public static partial uint RegisterClipboardFormatW(string name);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial nint GlobalAlloc(uint flags, nuint bytes);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial nint GlobalLock(nint memory);
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GlobalUnlock(nint memory);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial nint GlobalFree(nint memory);
 }

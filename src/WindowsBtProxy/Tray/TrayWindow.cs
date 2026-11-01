@@ -45,12 +45,14 @@ internal sealed unsafe class TrayWindow : IDisposable
     private const nuint MenuStatus = 1;
     private const nuint MenuOpenLogs = 2;
     private const nuint MenuQuit = 3;
+    private const nuint MenuShowKey = 4;
 
     private static TrayWindow? s_current;
     private static uint s_taskbarCreated;
 
     private readonly string _pipeName;
     private readonly Func<LifecycleAction> _checkLifecycle;
+    private readonly Action<nint> _showKey;
     private readonly ConcurrentQueue<Action> _posted = new();
     private readonly nint[] _icons = new nint[3];
     private nint _hwnd;
@@ -59,17 +61,22 @@ internal sealed unsafe class TrayWindow : IDisposable
     private StatusWindow? _status;
     private TrayExit _exit = TrayExit.Quit;
 
-    private TrayWindow(string pipeName, Func<LifecycleAction> checkLifecycle)
+    private TrayWindow(string pipeName, Func<LifecycleAction> checkLifecycle, Action<nint> showKey)
     {
         _pipeName = pipeName;
         _checkLifecycle = checkLifecycle;
+        _showKey = showKey;
     }
 
     /// <summary>Creates the hidden window, adds the icon (red until the first answer) and starts polling.</summary>
     /// <param name="pipeName">The service's pipe; only tests use another one.</param>
     /// <param name="request">Asks the service for its status (see <see cref="TrayController"/>).</param>
     /// <param name="checkLifecycle">The 30-second check against the installed exe and the Run value.</param>
-    public static TrayWindow Create(string pipeName, Func<CancellationToken, Task<PipeResponse?>> request, Func<LifecycleAction> checkLifecycle)
+    /// <param name="showKey">
+    /// "Show encryption key…", from the menu or the status window's button; gets the window the UAC prompt belongs to.
+    /// </param>
+    public static TrayWindow Create(
+        string pipeName, Func<CancellationToken, Task<PipeResponse?>> request, Func<LifecycleAction> checkLifecycle, Action<nint> showKey)
     {
         if (s_current is not null)
         {
@@ -92,7 +99,7 @@ internal sealed unsafe class TrayWindow : IDisposable
         }
         s_taskbarCreated = Native.RegisterWindowMessageW("TaskbarCreated");
 
-        var window = new TrayWindow(pipeName, checkLifecycle);
+        var window = new TrayWindow(pipeName, checkLifecycle, showKey);
         s_current = window;
         try
         {
@@ -199,7 +206,7 @@ internal sealed unsafe class TrayWindow : IDisposable
             _status.Focus();
             return;
         }
-        _status = StatusWindow.Open(StatusTextFor(_controller!.LastResponse), OnStatusClosed);
+        _status = StatusWindow.Open(StatusTextFor(_controller!.LastResponse), _showKey, OnStatusClosed);
         _ = Native.SetTimer(_hwnd, PollTimer, PollMsWhileStatusOpen, 0);
         _controller.Tick();
     }
@@ -223,6 +230,7 @@ internal sealed unsafe class TrayWindow : IDisposable
         try
         {
             _ = Native.AppendMenuW(menu, Native.MF_STRING, MenuStatus, "Status…");
+            _ = Native.AppendMenuW(menu, Native.MF_STRING, MenuShowKey, "Show encryption key…");
             _ = Native.AppendMenuW(menu, Native.MF_STRING, MenuOpenLogs, "Open log folder");
             _ = Native.AppendMenuW(menu, Native.MF_SEPARATOR, 0, null);
             _ = Native.AppendMenuW(menu, Native.MF_STRING, MenuQuit, "Quit");
@@ -240,6 +248,10 @@ internal sealed unsafe class TrayWindow : IDisposable
             {
                 case MenuStatus:
                     ShowStatus();
+                    break;
+                case MenuShowKey:
+                    // This window was made the foreground one for the menu, so the UAC prompt can come up in front.
+                    _showKey(_hwnd);
                     break;
                 case MenuOpenLogs:
                     OpenLogFolder();

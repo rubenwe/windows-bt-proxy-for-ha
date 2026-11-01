@@ -8,4 +8,6 @@ namespace WindowsBtProxy.Ipc;
     UseStringEnumConverter = true,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(ProxyStatus))]
+[JsonSerializable(typeof(PipeRequest))]
+[JsonSerializable(typeof(PipeResponse))]
 internal sealed partial class IpcJsonContext : JsonSerializerContext;

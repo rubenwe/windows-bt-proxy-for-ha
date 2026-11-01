@@ -33,6 +33,12 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
 
     public static string FirewallRuleName(int port) => $"Windows BT Proxy for Home Assistant (TCP {port.ToString(CultureInfo.InvariantCulture)})";
 
+    /// <summary>
+    /// The command line for the per-user Run key value that starts the tray at logon. Plain quoted exe plus verb: the manifest
+    /// (consoleAllocationPolicy detached) is what keeps the tray free of a console window, see docs/decisions.md.
+    /// </summary>
+    public static string TrayCommandLine(string exe) => $"\"{exe}\" tray";
+
     public async Task InstallAsync(CancellationToken ct)
     {
         var source = paths.RunningExe ?? throw new SetupException("Cannot tell where this program is running from, so there is nothing to copy.");

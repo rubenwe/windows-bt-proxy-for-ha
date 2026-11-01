@@ -533,5 +533,13 @@ public sealed class InstallerTests : IDisposable
         Assert.DoesNotContain("said", e.Message);
     }
 
+    [Fact]
+    public void TrayCommandLine_quotes_the_exe_path_and_adds_the_tray_verb()
+    {
+        Assert.Equal(
+            "\"C:\\Program Files\\WindowsBtProxyForHA\\windows-bt-proxy.exe\" tray",
+            Installer.TrayCommandLine(@"C:\Program Files\WindowsBtProxyForHA\windows-bt-proxy.exe"));
+    }
+
     public void Dispose() => _box.Dispose();
 }

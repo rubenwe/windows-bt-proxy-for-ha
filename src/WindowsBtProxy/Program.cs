@@ -2,6 +2,13 @@ using System.Reflection;
 using WindowsBtProxy.Hosting;
 using WindowsBtProxy.Setup;
 
+// First, before anything touches Console: the manifest detaches this console-subsystem exe from any console it did not inherit
+// (so `tray` shows no window); every other verb gets its console (or the parent's) back here.
+if (ConsoleAttach.NeedsConsole(args))
+{
+    ConsoleAttach.Ensure();
+}
+
 // install, uninstall and key: handled (and elevated) by the setup commands.
 if (SetupCommands.TryRunAsync(args, CancellationToken.None) is { } setup)
 {

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PublishAot>true</PublishAot>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- -p:ProbeManifest=none builds variant B's shape: no consoleAllocationPolicy in the manifest. -->
+    <ApplicationManifest Condition="'$(ProbeManifest)' != 'none'">app.manifest</ApplicationManifest>
+    <AssemblyName Condition="'$(ProbeManifest)' == 'none'">probe-nopolicy</AssemblyName>
+    <AssemblyName Condition="'$(ProbeManifest)' != 'none'">probe</AssemblyName>
+  </PropertyGroup>
+</Project>

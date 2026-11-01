@@ -109,3 +109,52 @@ radio is not on (not yet re-checked on hardware).
 **Second PC, from the 0.1.0 release.** A Surface laptop, installed from the published release zip, appeared under
 *Discovered* in Home Assistant on its own and was added from there (config entry source `zeroconf`); HA provisioned its key
 and created its Bluetooth scanner entry, with no repairs. Discovery of a device HA has not seen before works.
+
+## Console window for the tray
+
+Question (plan 2): the exe is a console-subsystem program. Started from the Run key, Explorer or a UAC relaunch it gets a
+console window, which is unacceptable for a tray icon. Can the same exe show a window for `run`, `install` and the other verbs
+and none for `tray`?
+
+Mechanism (Windows 11 24H2+, build 26100): the manifest setting `consoleAllocationPolicy` = `detached` (namespace
+`http://schemas.microsoft.com/SMI/2024/WindowsSettings`) stops Windows from creating a console for a launch that has none to
+inherit, and `AllocConsoleWithOptions` (kernel32, exported on 24H2+ only) gets one back. Struct layout and constants checked
+against `consoleapi.h` of Windows SDK 10.0.26100: `ALLOC_CONSOLE_OPTIONS { int mode; BOOL useShowWindow; WORD showWindow; }`,
+`ALLOC_CONSOLE_MODE_DEFAULT = 0` (attach to the parent's console, else open a window), `NEW_WINDOW = 1`, `NO_WINDOW = 2`.
+
+**Decision: variant A.** `app.manifest` sets the policy. `Program.cs` calls `ConsoleAttach.Ensure()` first, before anything
+touches `Console`, for every verb except `service` and `tray`. `Ensure` calls `AllocConsoleWithOptions(DEFAULT)` and ignores
+`EntryPointNotFoundException` (pre-24H2: the policy is ignored, the console already exists). The export is bound lazily (not in
+the import table of the AOT exe), so the exe still loads on Windows before 24H2. `Installer.TrayCommandLine` is plain
+`"<exe>" tray`.
+
+### Matrix, this PC (Windows 11 build 26300), probe `spikes/ConsolePolicyProbe`, Native AOT
+
+"Window" is read from the probe's own log (`GetConsoleWindow() != 0`, processes on the console, kind of stdout) and from
+whether a `conhost.exe` child appeared. Terminal rows ran in a `pwsh` and a `cmd.exe` window opened by the harness; their
+screen buffer was read back with `ReadConsoleOutputCharacter`.
+
+| Launch | Result under A |
+| --- | --- |
+| `probe show` typed in pwsh | pass: output on that terminal's screen, shell waited, `$LASTEXITCODE` 7. The console is inherited (window present, 2 processes) before `AllocConsoleWithOptions`; the call returns `EXISTING_CONSOLE` |
+| same in cmd.exe | pass: `%ERRORLEVEL%` 7, same log |
+| `$x = & probe show`, `probe show \| Out-String` | pass: output captured; stdout is a pipe and stays one (the call does not replace redirected handles) |
+| `Start-Process probe tray` (ShellExecute, like Run key and Explorer), from the tool shell and from a pwsh window | pass: no window at all: `GetConsoleWindow` 0, 0 processes on a console, no `conhost.exe` child, before and after |
+| `Start-Process probe show`, same two origins | pass: `AllocConsoleWithOptions` returns `NEW_CONSOLE`, a `conhost.exe` child and a Windows Terminal window appear, stdout is the console |
+| Ctrl+C on a `show --ctrlc` wait loop (probe started with `-NoNewWindow` in a pwsh window, `GenerateConsoleCtrlEvent`) | pass: `CancelKeyPress` fired, exit 130 |
+| `Start-Process probe tray` / `show` with `-Verb RunAs` (UAC) | pending (author) |
+| HKCU `...\Run` value `"<probe>" tray`, sign out and in | pending (author) |
+
+Also with the real exe (variant A applied), same harness: `version`, an unknown verb (usage, exit 1) and `key show`
+(not elevated: "Run this from an elevated terminal", exit 1) show their output in a pwsh window and exit with the right code;
+`run --no-mdns --fake-scanner --port 16053 --data-dir <temp>` logs to the terminal, to a redirected file, and, via
+`Start-Process`, in a new console window; `Start-Process ... tray` (not implemented yet, so it exits 1) opens no console.
+`install` and `uninstall` are not exercised here because both raise UAC; they go through the pending `-Verb RunAs` rows.
+
+### Pre-24H2
+
+The manifest setting is ignored, so every launch gets a console. Fallback in code: `tray` calls `ConsoleAttach.ReleaseIfAlone()`
+(`FreeConsole` when `GetConsoleProcessList` returns 1), so a launch from Run/Explorer only flashes a window. Not testable on
+this PC; the shape was simulated with the probe built without the policy (`probe-nopolicy tray --release-if-alone`, started
+through `Start-Process`): console present with 1 process, freed, `GetConsoleWindow` 0 afterwards. Variant B (no manifest policy,
+`conhost.exe --headless "<exe>" tray` in the Run key) is not needed while the terminal rows pass.

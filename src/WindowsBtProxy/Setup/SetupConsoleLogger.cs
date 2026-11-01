@@ -21,6 +21,11 @@ public sealed class SetupConsoleLogger(TextWriter output) : ILogger
             LogLevel.Error or LogLevel.Critical => "error: ",
             _ => string.Empty,
         };
-        output.WriteLine(prefix + formatter(state, exception));
+        var text = formatter(state, exception);
+        if (exception is not null && logLevel >= LogLevel.Warning)
+        {
+            text += " (" + exception.Message + ")";
+        }
+        output.WriteLine(prefix + text);
     }
 }

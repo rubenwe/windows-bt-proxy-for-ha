@@ -9,8 +9,11 @@ public interface IElevation
 {
     bool IsElevated { get; }
 
-    /// <summary>Runs this program again, elevated, with <paramref name="args"/>, waits, and returns its exit code. A declined prompt prints a message to <paramref name="output"/> and returns 1.</summary>
-    Task<int> RelaunchElevatedAsync(string[] args, TextWriter output, CancellationToken ct);
+    /// <summary>
+    /// Runs this program again, elevated, with <paramref name="args"/>, waits, and returns its exit code. If it could not be
+    /// started (prompt declined, no program path) a message goes to <paramref name="output"/> and the result is null.
+    /// </summary>
+    Task<int?> RelaunchElevatedAsync(string[] args, TextWriter output, CancellationToken ct);
 }
 
 /// <summary>The real thing: the token's Administrators membership and the <c>runas</c> shell verb.</summary>
@@ -27,13 +30,13 @@ public sealed class WindowsElevation : IElevation
         }
     }
 
-    public async Task<int> RelaunchElevatedAsync(string[] args, TextWriter output, CancellationToken ct)
+    public async Task<int?> RelaunchElevatedAsync(string[] args, TextWriter output, CancellationToken ct)
     {
         var exe = Environment.ProcessPath;
         if (exe is null)
         {
             output.WriteLine("Cannot tell where this program is running from, so it cannot ask for administrator rights. Run it from an elevated terminal (Run as administrator).");
-            return 1;
+            return null;
         }
 
         var info = new ProcessStartInfo(exe) { UseShellExecute = true, Verb = "runas" };
@@ -50,7 +53,7 @@ public sealed class WindowsElevation : IElevation
             if (process is null)
             {
                 output.WriteLine("Could not start the elevated copy of this program.");
-                return 1;
+                return null;
             }
             await process.WaitForExitAsync(ct);
             return process.ExitCode;
@@ -58,12 +61,12 @@ public sealed class WindowsElevation : IElevation
         catch (Win32Exception e) when (e.NativeErrorCode == ErrorCancelled)
         {
             output.WriteLine("Administrator rights were declined (the UAC prompt was cancelled), so nothing was changed.");
-            return 1;
+            return null;
         }
         catch (Win32Exception e)
         {
             output.WriteLine($"Could not ask for administrator rights: {e.Message}");
-            return 1;
+            return null;
         }
     }
 }

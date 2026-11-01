@@ -127,6 +127,67 @@ public sealed class SetupCommandsTests : IDisposable
         Assert.Equal(0, waited);
     }
 
+    [Fact]
+    public async Task Relaunch_prints_how_the_elevated_copy_ended()
+    {
+        var elevation = new FakeElevation(elevated: false) { RelaunchExitCode = 9 };
+
+        await Run(["Uninstall"], elevation: elevation);
+
+        Assert.Contains("Elevated uninstall finished (exit code 9).", _output.ToString());
+    }
+
+    [Fact]
+    public async Task A_declined_elevation_prompt_returns_1_without_claiming_the_command_finished()
+    {
+        var elevation = new FakeElevation(elevated: false) { RelaunchExitCode = null };
+
+        var code = await Run(["install"], elevation: elevation);
+
+        Assert.Equal(1, code);
+        Assert.DoesNotContain("finished", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Relaunched_uninstall_that_removes_its_own_folder_exits_without_waiting_for_a_key()
+    {
+        var installed = Path.Combine(_box.ProgramDir, "windows-bt-proxy.exe");
+        Directory.CreateDirectory(_box.ProgramDir);
+        File.WriteAllText(installed, "x");
+        var waited = 0;
+        var context = _box.Context(_runner, _output, paths: _box.Paths(sourceExe: installed)) with { WaitForKey = () => waited++ };
+
+        var code = await SetupCommands.RunAsync(["uninstall", "--relaunched"], context, CancellationToken.None);
+
+        Assert.Equal(0, code);
+        Assert.Single(_runner.Detached);
+        Assert.Equal(0, waited); // a window waiting here would keep the program file open and block the removal
+    }
+
+    [Fact]
+    public async Task Relaunched_uninstall_from_elsewhere_still_waits_for_a_key()
+    {
+        var waited = 0;
+        var context = _box.Context(_runner, _output) with { WaitForKey = () => waited++ };
+
+        await SetupCommands.RunAsync(["uninstall", "--relaunched"], context, CancellationToken.None);
+
+        Assert.Equal(1, waited);
+    }
+
+    [Fact]
+    public async Task An_unexpected_exception_prints_one_line_and_returns_1()
+    {
+        Directory.CreateDirectory(_box.Data.Root);
+        _runner.ThrowOnStart = new System.ComponentModel.Win32Exception(2, "The system cannot find the file specified");
+
+        var code = await Run(["key", "rotate"]);
+
+        Assert.Equal(1, code);
+        Assert.Contains("Unexpected error: The system cannot find the file specified", _output.ToString());
+        Assert.DoesNotContain("   at ", _output.ToString());
+    }
+
     // ---- key ----
 
     [Theory]
@@ -145,6 +206,24 @@ public sealed class SetupCommandsTests : IDisposable
         Assert.Empty(elevation.Relaunches);
         Assert.Empty(_runner.Commands);
         Assert.False(File.Exists(_box.Data.KeyFile));
+    }
+
+    [Theory]
+    [InlineData("show")]
+    [InlineData("rotate")]
+    [InlineData("clear")]
+    public async Task Key_commands_refuse_a_data_dir_with_a_foreign_owned_file(string sub)
+    {
+        Directory.CreateDirectory(_box.Data.Root);
+        File.WriteAllText(_box.Data.KeyFile, "planted");
+        _box.Inspector.Owners[_box.Data.KeyFile] = new System.Security.Principal.SecurityIdentifier("S-1-5-21-1-2-3-1001");
+
+        var code = await Run(["key", sub]);
+
+        Assert.Equal(1, code);
+        Assert.Contains("not owned by SYSTEM or Administrators", _output.ToString());
+        Assert.Equal("planted", File.ReadAllText(_box.Data.KeyFile));
+        Assert.Empty(_runner.Commands);
     }
 
     [Fact]

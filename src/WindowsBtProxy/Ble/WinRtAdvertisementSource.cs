@@ -37,6 +37,8 @@ public sealed class WinRtAdvertisementSource : IAdvertisementSource
     private bool _wantRunning;
     private bool _disposed;
     private int _disposeStarted;
+    private int _startFailureLogged;
+    private int _mappingFailureLogged;
     private ulong _adapterAddress;
     private int _status = (int)ScannerStatus.Starting;
 
@@ -95,6 +97,7 @@ public sealed class WinRtAdvertisementSource : IAdvertisementSource
             var radio = await adapter.GetRadioAsync().AsTask(ct).ConfigureAwait(false);
             if (radio is null)
             {
+                Volatile.Write(ref _adapterAddress, 0);
                 Teardown(ScannerStatus.NoAdapter);
                 return;
             }
@@ -120,6 +123,7 @@ public sealed class WinRtAdvertisementSource : IAdvertisementSource
             }
 
             watcher.Start();
+            Volatile.Write(ref _startFailureLogged, 0);
             SetStatus(watcher, ScannerStatus.Running);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -128,7 +132,16 @@ public sealed class WinRtAdvertisementSource : IAdvertisementSource
         }
         catch (Exception e)
         {
-            _log.LogWarning(e, "Starting the Bluetooth LE watcher failed");
+            // A persistent failure is retried every 10 s: the full exception once, then one line per repeat until a start succeeds.
+            if (Interlocked.Exchange(ref _startFailureLogged, 1) == 0)
+            {
+                _log.LogWarning(e, "Starting the Bluetooth LE watcher failed");
+            }
+            else
+            {
+                _log.LogDebug("Starting the Bluetooth LE watcher failed again: {Reason}", e.Message);
+            }
+
             Teardown(ScannerStatus.Failed);
         }
     }
@@ -197,7 +210,15 @@ public sealed class WinRtAdvertisementSource : IAdvertisementSource
         }
         catch (Exception ex)
         {
-            _log.LogDebug(ex, "Dropped an advertisement");
+            // Every advertisement would fail the same way: say so once at Warning, then keep the log quiet.
+            if (Interlocked.Exchange(ref _mappingFailureLogged, 1) == 0)
+            {
+                _log.LogWarning(ex, "Could not map a Bluetooth advertisement; dropping it (further failures are logged at Debug)");
+            }
+            else
+            {
+                _log.LogDebug(ex, "Dropped an advertisement");
+            }
         }
     }
 

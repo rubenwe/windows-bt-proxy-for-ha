@@ -10,15 +10,30 @@ public sealed class ProcessRunnerTests
     {
         var runner = new ProcessRunner();
 
-        Assert.Equal(0, await runner.RunAsync("cmd.exe", "/c exit 0", CancellationToken.None));
-        Assert.Equal(3, await runner.RunAsync("cmd.exe", "/c exit 3", CancellationToken.None));
+        Assert.Equal(0, (await runner.RunAsync("cmd.exe", "/c exit 0", CancellationToken.None)).ExitCode);
+        Assert.Equal(3, (await runner.RunAsync("cmd.exe", "/c exit 3", CancellationToken.None)).ExitCode);
     }
 
     [Fact]
     public async Task RunAsync_does_not_block_on_chatty_output()
     {
-        var code = await new ProcessRunner().RunAsync("cmd.exe", "/c for /l %i in (1,1,3000) do @echo line %i", CancellationToken.None);
+        var code = (await new ProcessRunner().RunAsync("cmd.exe", "/c for /l %i in (1,1,3000) do @echo line %i", CancellationToken.None)).ExitCode;
 
         Assert.Equal(0, code);
+    }
+
+    [Fact]
+    public async Task RunAsync_keeps_the_last_ten_lines_of_output_from_stdout_and_stderr()
+    {
+        var result = await new ProcessRunner().RunAsync("cmd.exe", "/c for /l %i in (1,1,25) do @echo line %i", CancellationToken.None);
+
+        var lines = result.Output.Split('\n');
+        Assert.Equal(10, lines.Length);
+        Assert.Equal("line 25", lines[^1]);
+        Assert.Equal("line 16", lines[0]);
+
+        var err = await new ProcessRunner().RunAsync("cmd.exe", "/c echo it broke 1>&2 & exit 4", CancellationToken.None);
+        Assert.Equal(4, err.ExitCode);
+        Assert.Equal("it broke", err.Output);
     }
 }

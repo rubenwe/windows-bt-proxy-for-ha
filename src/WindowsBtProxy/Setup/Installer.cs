@@ -17,10 +17,19 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
     public const string DisplayName = "Windows BT Proxy for Home Assistant";
     public const string Description = "Passive Bluetooth LE proxy for Home Assistant (ESPHome-compatible API).";
 
+    /// <summary>Exit 1: a connected network is Public. Exit 2: the check itself failed. Exit 0: all fine.</summary>
+    internal const string PublicNetworkCheckArgs =
+        "-NoProfile -NonInteractive -Command \"try { if (Get-NetConnectionProfile -ErrorAction Stop | Where-Object NetworkCategory -eq 'Public') { exit 1 } else { exit 0 } } catch { exit 2 }\"";
+
     private const int ErrorServiceDoesNotExist = 1060;
     private const int ErrorServiceMarkedForDeletion = 1072;
     private const int ErrorServiceExists = 1073;
     private const int ErrorServiceAlreadyRunning = 1056;
+
+    private static readonly char[] UnsafeInCmdLine = ['"', '%', '&', '^', '|', '<', '>'];
+
+    /// <summary>True after <see cref="UninstallAsync"/> left the running program's folder to be removed by a helper once this process has exited.</summary>
+    public bool SelfRemovalScheduled { get; private set; }
 
     public static string FirewallRuleName(int port) => $"Windows BT Proxy for Home Assistant (TCP {port.ToString(CultureInfo.InvariantCulture)})";
 
@@ -32,6 +41,9 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
             throw new SetupException($"The program file {source} does not exist.");
         }
 
+        // Before anything changes: an existing data folder must not have been prepared by a normal user.
+        DataDirGuard.Verify(paths.Data.Root, paths.DataInspector);
+
         // An existing install means the service may be running the very file we are about to overwrite (an upgrade).
         // net.exe waits until the service is stopped; a non-zero exit just means it was not installed or not running.
         log.LogInformation("Stopping the service if it is running.");
@@ -39,33 +51,38 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
 
         await CopyProgramAsync(source, paths.ExePath, ct);
 
+        var storedPort = ReadPortOrDefault();
         var port = PrepareDataDir().Port;
         var exe = paths.ExePath;
 
         // The service control manager takes the whole command line as one string; the program path is quoted inside it.
         var serviceArgs = $"binPath= \"\\\"{exe}\\\" service\" start= auto DisplayName= \"{DisplayName}\"";
         var create = await runner.RunAsync("sc.exe", $"create {ServiceName} {serviceArgs}", ct);
-        if (create == ErrorServiceExists)
+        if (create.ExitCode == ErrorServiceExists)
         {
             log.LogInformation("Service {Service} already exists; updating it.", ServiceName);
             await RequireAsync("sc.exe", $"config {ServiceName} {serviceArgs}", "update the service", ct);
         }
-        else if (create != 0)
+        else if (create.ExitCode != 0)
         {
             throw Failed("sc.exe", create, "create the service");
         }
         log.LogInformation("Service {Service} is registered (starts automatically).", ServiceName);
 
         var describe = await runner.RunAsync("sc.exe", $"description {ServiceName} \"{Description}\"", ct);
-        if (describe != 0)
+        if (describe.ExitCode != 0)
         {
-            log.LogWarning("Could not set the service description (sc.exe exit code {Code}); continuing.", describe);
+            log.LogWarning("Could not set the service description (sc.exe exit code {Code}); continuing.", describe.ExitCode);
         }
         await RequireAsync("sc.exe", $"failure {ServiceName} reset= 86400 actions= restart/5000/restart/5000/restart/30000", "set the service to restart on failure", ct);
 
-        // Replace, never append: a second rule with the same name would pile up on every upgrade. Exit 1 here just means "no such rule".
+        // Replace, never append: a second rule with the same name would pile up on every upgrade. Rules left by an earlier port
+        // (the stored one, or the default) go too. Exit 1 from netsh just means "no such rule".
+        foreach (var oldPort in new[] { port, storedPort, ProxySettings.DefaultPort }.Distinct())
+        {
+            await runner.RunAsync("netsh.exe", $"advfirewall firewall delete rule name=\"{FirewallRuleName(oldPort)}\"", ct);
+        }
         var ruleName = FirewallRuleName(port);
-        await runner.RunAsync("netsh.exe", $"advfirewall firewall delete rule name=\"{ruleName}\"", ct);
         await RequireAsync(
             "netsh.exe",
             $"advfirewall firewall add rule name=\"{ruleName}\" dir=in action=allow protocol=TCP localport={port.ToString(CultureInfo.InvariantCulture)} profile=private,domain program=\"{exe}\"",
@@ -77,7 +94,7 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
 
         await WarnIfPublicNetworkAsync(ct);
 
-        if (start != 0 && start != ErrorServiceAlreadyRunning)
+        if (start.ExitCode != 0 && start.ExitCode != ErrorServiceAlreadyRunning)
         {
             throw Failed("sc.exe", start, "start the service; it is installed, so check the log in " + paths.Data.LogDir);
         }
@@ -92,7 +109,7 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
         await runner.RunAsync("net.exe", $"stop {ServiceName}", ct);
 
         var delete = await runner.RunAsync("sc.exe", $"delete {ServiceName}", ct);
-        switch (delete)
+        switch (delete.ExitCode)
         {
             case 0:
                 log.LogInformation("Service {Service} removed.", ServiceName);
@@ -108,7 +125,10 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
                 throw Failed("sc.exe", delete, "remove the service");
         }
 
-        await runner.RunAsync("netsh.exe", $"advfirewall firewall delete rule name=\"{FirewallRuleName(port)}\"", ct);
+        foreach (var rulePort in new[] { port, ProxySettings.DefaultPort }.Distinct())
+        {
+            await runner.RunAsync("netsh.exe", $"advfirewall firewall delete rule name=\"{FirewallRuleName(rulePort)}\"", ct);
+        }
 
         await RemoveProgramDirAsync(ct);
 
@@ -177,23 +197,25 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
         int code;
         try
         {
-            code = await runner.RunAsync(
-                "powershell.exe",
-                "-NoProfile -NonInteractive -Command \"if (Get-NetConnectionProfile | Where-Object NetworkCategory -eq 'Public') { exit 1 } else { exit 0 }\"",
-                ct);
+            code = (await runner.RunAsync("powershell.exe", PublicNetworkCheckArgs, ct)).ExitCode;
         }
         catch (Exception e) when (e is Win32Exception or InvalidOperationException)
         {
             // Only a courtesy warning: never fail the install over it.
             log.LogDebug(e, "Could not check the network profile.");
-            return;
+            code = 2;
         }
+
         if (code == 1)
         {
             log.LogWarning(
                 "A connected network is set to Public. The firewall rule only covers Private and Domain networks, so Home Assistant cannot reach the proxy over a Public one. " +
                 "To change a network to Private: Settings > Network & internet > Wi-Fi or Ethernet > the network > Network profile type > Private network " +
                 "(or, in an elevated PowerShell: Set-NetConnectionProfile -InterfaceAlias <name> -NetworkCategory Private).");
+        }
+        else if (code != 0)
+        {
+            log.LogInformation("Could not check the network profile. If Home Assistant cannot reach the proxy, make sure the network is set to Private (the firewall rule only covers Private and Domain networks).");
         }
     }
 
@@ -218,8 +240,7 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
             return;
         }
 
-        // Windows will not delete a running program, so delete everything else now and hand the folder to a short-lived
-        // cmd.exe that waits a few seconds (ping is the usual built-in sleep) for this process to exit, then removes it.
+        // Windows will not delete a running program: delete everything else now, then hand the folder to a detached cmd.exe.
         foreach (var entry in Directory.EnumerateFileSystemEntries(paths.ProgramDir).ToList())
         {
             if (SamePath(entry, running))
@@ -242,8 +263,25 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
                 log.LogWarning("Could not remove {Path}: {Message}", entry, e.Message);
             }
         }
-        runner.StartDetached("cmd.exe", $"/c ping -n 4 127.0.0.1 >nul & rmdir /s /q \"{paths.ProgramDir}\"");
-        log.LogInformation("{Dir} will be removed a few seconds after this program exits.", paths.ProgramDir);
+        ScheduleSelfRemoval();
+    }
+
+    /// <summary>
+    /// The detached helper retries <c>rmdir</c> once a second for up to a minute, because how long this process (and, when it was
+    /// relaunched elevated, the process waiting for it) keeps the program file open is not predictable. It stops being busy as
+    /// soon as the folder is gone. The folder name goes into a command line, so only the expected, harmless shape is accepted.
+    /// </summary>
+    private void ScheduleSelfRemoval()
+    {
+        var dir = Path.TrimEndingDirectorySeparator(paths.ProgramDir);
+        if (!Path.IsPathRooted(dir) || Path.GetFileName(dir) != ServiceName || dir.IndexOfAny(UnsafeInCmdLine) >= 0)
+        {
+            log.LogWarning("Not scheduling removal of {Dir} (unexpected folder name); delete it yourself after this program exits.", paths.ProgramDir);
+            return;
+        }
+        runner.StartDetached("cmd.exe", $"/c for /l %i in (1,1,60) do @if exist \"{dir}\" (rmdir /s /q \"{dir}\" 2>nul & ping -n 2 127.0.0.1 >nul)");
+        SelfRemovalScheduled = true;
+        log.LogInformation("{Dir} will be removed a moment after this program exits.", dir);
     }
 
     private async Task<bool> TryDeleteDirectoryAsync(string dir, CancellationToken ct)
@@ -291,15 +329,29 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
 
     private async Task RequireAsync(string exe, string args, string what, CancellationToken ct)
     {
-        var code = await runner.RunAsync(exe, args, ct);
-        if (code != 0)
+        var result = await runner.RunAsync(exe, args, ct);
+        if (result.ExitCode != 0)
         {
-            throw Failed(exe, code, what);
+            throw Failed(exe, result, what);
         }
     }
 
-    private static SetupException Failed(string exe, int code, string what)
-        => new($"Could not {what}: {exe} exited with code {code.ToString(CultureInfo.InvariantCulture)} (run \"net helpmsg {code.ToString(CultureInfo.InvariantCulture)}\" to see what that means).");
+    /// <summary>Exit code, the Windows error text hint for tools that return Win32 codes (sc.exe, net.exe), and what the tool printed.</summary>
+    internal static SetupException Failed(string exe, ProcessResult result, string what)
+    {
+        var code = result.ExitCode.ToString(CultureInfo.InvariantCulture);
+        var message = $"Could not {what}: {exe} exited with code {code}";
+        if (exe.Equals("sc.exe", StringComparison.OrdinalIgnoreCase) || exe.Equals("net.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            message += $" (run \"net helpmsg {code}\" for the Windows error text)";
+        }
+        message += ".";
+        if (!string.IsNullOrWhiteSpace(result.Output))
+        {
+            message += $"\n  {exe} said:\n    " + result.Output.Replace("\n", "\n    ", StringComparison.Ordinal);
+        }
+        return new SetupException(message);
+    }
 
     private static bool SamePath(string a, string b)
         => string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);

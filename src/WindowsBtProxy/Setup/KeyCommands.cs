@@ -104,18 +104,20 @@ public sealed class KeyCommands(SetupContext context)
     /// <summary>net.exe stop waits until the service has stopped and fails if it was not running; only a service that was running is started again.</summary>
     private async Task RestartServiceIfRunningAsync(CancellationToken ct)
     {
-        if (await context.Runner.RunAsync("net.exe", $"stop {Installer.ServiceName}", ct) != 0)
+        if ((await context.Runner.RunAsync("net.exe", $"stop {Installer.ServiceName}", ct)).ExitCode != 0)
         {
             context.Out.WriteLine("The service is not running; the change applies the next time it starts.");
             return;
         }
-        if (await context.Runner.RunAsync("net.exe", $"start {Installer.ServiceName}", ct) == 0)
+        var start = await context.Runner.RunAsync("net.exe", $"start {Installer.ServiceName}", ct);
+        if (start.ExitCode == 0)
         {
             context.Out.WriteLine("The service was restarted, so open Home Assistant sessions were dropped and reconnect using the current key setting.");
         }
         else
         {
-            context.Out.WriteLine($"error: the service was stopped but did not start again. Start it with: net start {Installer.ServiceName}");
+            var said = string.IsNullOrWhiteSpace(start.Output) ? string.Empty : $" net.exe said: {start.Output.Replace("\n", " ", StringComparison.Ordinal)}";
+            context.Out.WriteLine($"error: the service was stopped but did not start again (net.exe exit code {start.ExitCode}).{said} Start it with: net start {Installer.ServiceName}");
         }
     }
 }

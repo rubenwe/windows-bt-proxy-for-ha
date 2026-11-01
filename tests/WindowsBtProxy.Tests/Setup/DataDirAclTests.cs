@@ -41,6 +41,15 @@ public sealed class DataDirAclTests
     }
 
     [Fact]
+    public void Build_makes_administrators_the_owner_so_a_pre_created_folder_cannot_keep_its_creator_as_owner()
+    {
+        var owner = (SecurityIdentifier?)DataDirAcl.Build().GetOwner(typeof(SecurityIdentifier));
+
+        Assert.NotNull(owner);
+        Assert.True(owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid));
+    }
+
+    [Fact]
     public void Build_gives_users_read_and_execute_only()
     {
         var rule = RuleFor(WellKnownSidType.BuiltinUsersSid);

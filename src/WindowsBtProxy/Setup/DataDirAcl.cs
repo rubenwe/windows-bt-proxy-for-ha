@@ -7,13 +7,15 @@ namespace WindowsBtProxy.Setup;
 public static class DataDirAcl
 {
     /// <summary>
-    /// SYSTEM and BUILTIN\Administrators full control, BUILTIN\Users read and execute, inheritance from the parent removed, and every
-    /// rule inherited by sub-folders and files. Well-known SIDs, so it works on any display language.
+    /// Owner BUILTIN\Administrators; SYSTEM and BUILTIN\Administrators full control, BUILTIN\Users read and execute, inheritance from
+    /// the parent removed, and every rule inherited by sub-folders and files. Well-known SIDs, so it works on any display language.
     /// </summary>
     public static DirectorySecurity Build()
     {
         const InheritanceFlags Inherit = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
         var security = new DirectorySecurity();
+        // The owner can always rewrite the permissions, so it must not be whoever happened to create the folder.
+        security.SetOwner(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null));
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
         security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), FileSystemRights.FullControl, Inherit, PropagationFlags.None, AccessControlType.Allow));
         security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null), FileSystemRights.FullControl, Inherit, PropagationFlags.None, AccessControlType.Allow));
@@ -21,17 +23,22 @@ public static class DataDirAcl
         return security;
     }
 
-    /// <summary>Creates <paramref name="path"/> with the ACL, or replaces the ACL of an existing folder.</summary>
+    /// <summary>Creates <paramref name="path"/> with the ACL, or replaces the owner and ACL of an existing folder. Refuses a link.</summary>
     public static void Apply(string path)
     {
         var info = new DirectoryInfo(path);
         if (info.Exists)
         {
-            info.SetAccessControl(Build());
+            if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new SetupException($"{path} is a link (junction or symbolic link), not a plain folder; delete it and run install again.");
+            }
         }
         else
         {
             info.Create(Build());
         }
+        // The descriptor has both the owner and the access rules marked as changed, so both are written.
+        info.SetAccessControl(Build());
     }
 }

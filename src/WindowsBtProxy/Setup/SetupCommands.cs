@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using WindowsBtProxy.Crypto;
 
 namespace WindowsBtProxy.Setup;
@@ -31,20 +32,22 @@ public static class SetupCommands
     {
         var relaunched = args.Contains(RelaunchedFlag, StringComparer.OrdinalIgnoreCase);
         var rest = args.Where(a => !string.Equals(a, RelaunchedFlag, StringComparison.OrdinalIgnoreCase)).ToArray();
+        var outcome = new Outcome();
         try
         {
-            return await DispatchAsync(rest, context, ct);
+            return await DispatchAsync(rest, context, outcome, ct);
         }
         finally
         {
-            if (relaunched)
+            // An uninstall that is deleting its own folder must exit now: the window it would wait in holds the program file open.
+            if (relaunched && !outcome.ExitNow)
             {
                 context.WaitForKey?.Invoke();
             }
         }
     }
 
-    private static async Task<int> DispatchAsync(string[] args, SetupContext context, CancellationToken ct)
+    private static async Task<int> DispatchAsync(string[] args, SetupContext context, Outcome outcome, CancellationToken ct)
     {
         try
         {
@@ -61,7 +64,9 @@ public static class SetupCommands
                 var keep = args.Length == 2;
                 return await ElevatedAsync(args, context, ct, async () =>
                 {
-                    await new Installer(context.Runner, context.Paths, context.Log).UninstallAsync(keep, ct);
+                    var installer = new Installer(context.Runner, context.Paths, context.Log);
+                    await installer.UninstallAsync(keep, ct);
+                    outcome.ExitNow = installer.SelfRemovalScheduled;
                     return 0;
                 });
             }
@@ -80,13 +85,38 @@ public static class SetupCommands
             context.Out.WriteLine($"error: {e.Message}");
             return 1;
         }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // Win32Exception, InvalidOperationException, ...: one clear line for the user, the detail for whoever debugs it.
+            context.Log.LogDebug(e, "Unexpected error in {Command}.", args[0]);
+            context.Out.WriteLine($"Unexpected error: {e.Message}");
+            return 1;
+        }
 
         context.Out.WriteLine(Usage);
         return 2;
     }
 
-    private static Task<int> ElevatedAsync(string[] args, SetupContext context, CancellationToken ct, Func<Task<int>> run)
-        => context.Elevation.IsElevated ? run() : context.Elevation.RelaunchElevatedAsync(args, context.Out, ct);
+    private static async Task<int> ElevatedAsync(string[] args, SetupContext context, CancellationToken ct, Func<Task<int>> run)
+    {
+        if (context.Elevation.IsElevated)
+        {
+            return await run();
+        }
+        var code = await context.Elevation.RelaunchElevatedAsync(args, context.Out, ct);
+        if (code is null)
+        {
+            return 1;
+        }
+        // The elevated copy printed into its own window, which is gone now; say at least how it ended.
+        context.Out.WriteLine($"Elevated {args[0].ToLowerInvariant()} finished (exit code {code}).");
+        return code.Value;
+    }
 
     private static bool Is(string arg, string verb) => string.Equals(arg, verb, StringComparison.OrdinalIgnoreCase);
+
+    private sealed class Outcome
+    {
+        public bool ExitNow { get; set; }
+    }
 }

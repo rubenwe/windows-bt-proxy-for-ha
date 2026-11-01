@@ -244,6 +244,13 @@ public sealed class WinRtAdvertisementSource : IAdvertisementSource
             {
                 if (!ReferenceEquals(_watcher, sender)) return;
 
+                // Switching the radio off in Windows stops the watcher with "Success" a moment before Radio.StateChanged
+                // fires (seen on an Intel AX210); go by the radio itself rather than report a failure for that.
+                if (status == ScannerStatus.Failed && _radio is { } radio && radio.State != RadioState.On)
+                {
+                    status = ScannerStatus.RadioOff;
+                }
+
                 _log.LogInformation("The Bluetooth LE watcher stopped ({Error}); reporting {Status}", error, status);
                 DetachWatcher();
                 ApplyStatus(status);

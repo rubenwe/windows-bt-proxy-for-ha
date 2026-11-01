@@ -92,5 +92,16 @@ Two defects showed up only against the real HA, both fixed:
   flow only uses the host name as a provisional device name and takes the real one from the device. (The Python spike
   had the same problem for a different reason.)
 
-Not covered here, still to do by hand: Bluetooth radio off/on while running; PC sleep/resume; a reboot with the
-installed service (the pre-logon scan itself was proven in the session-0 gate above); a second PC; `uninstall`.
+### Manual checks, same day
+
+| Check | Result |
+| --- | --- |
+| Bluetooth radio off for 20 s and on again (via `Windows.Devices.Radios`, since mouse and keyboard are Bluetooth) | pass: `RadioOff`, then `Running` as soon as the radio was back; HA stayed connected; normal advertisement rate the next minute |
+| Sleep for about 1.5 min, then wake | pass: the watcher kept running (no silent stall); HA's connection died during sleep and HA reconnected by itself 20 s after wake |
+| Reboot, logon delayed | pass: scanning 15 s after boot; no network yet, so DNS-SD waited and re-published on the address change 6 s later; HA connected 22 s after boot and was fed for about 16 min before anyone logged on |
+| `uninstall --keep-settings`, then `install` | pass: key and settings kept; HA reconnected with the existing key within a second |
+| `uninstall` (removes the key), then `install` | pass: HA asked to confirm the encryption change, then provisioned a new key; plaintext refused again afterwards |
+
+The radio-off check showed one wart: switching the radio off stops the watcher with `Success` about half a second before
+`Radio.StateChanged`, so the scanner briefly reported `Failed`. An unexpected stop is now reported as `RadioOff` when the
+radio is not on (not yet re-checked on hardware). Still open: a second PC (discovery of a device HA has not seen).

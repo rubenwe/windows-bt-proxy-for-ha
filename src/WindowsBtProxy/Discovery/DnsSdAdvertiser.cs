@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -129,8 +130,11 @@ public sealed unsafe partial class DnsSdAdvertiser(ILogger log) : IDisposable
             fixed (nint* v = values)
             {
                 // The API copies everything into its own allocation, so the strings and the address can go afterwards.
+                // The SRV target is the computer's own name: Windows' mDNS responder answers A queries only for that, not for a
+                // host name passed here (seen with HA 2026.10: PTR/SRV/TXT arrived, the A query for "<name>.local" went
+                // unanswered and discovery was dropped). HA's ESPHome flow takes the name from the device itself afterwards.
                 return DnsServiceConstructInstance(
-                    $"{name}.{ServiceType}", $"{name}.local", &ip4, 0, port, 0, 0, (uint)count, k, v);
+                    $"{name}.{ServiceType}", $"{Dns.GetHostName()}.local", &ip4, 0, port, 0, 0, (uint)count, k, v);
             }
         }
         finally

@@ -39,6 +39,25 @@ public sealed class PipeProtocolTests
     }
 
     [Fact]
+    public async Task Responses_may_be_longer_than_requests_up_to_their_own_limit()
+    {
+        var content = new string('a', PipeProtocol.MaxLineBytes * 3);
+        using var stream = new MemoryStream();
+
+        await Assert.ThrowsAsync<PipeLineTooLongException>(() => PipeProtocol.WriteLineAsync(stream, content, Ct));
+        await PipeProtocol.WriteLineAsync(stream, content, PipeProtocol.MaxResponseBytes, Ct);
+
+        stream.Position = 0;
+        await Assert.ThrowsAsync<PipeLineTooLongException>(() => PipeProtocol.ReadLineAsync(stream, Ct));
+        stream.Position = 0;
+        Assert.Equal(content, await PipeProtocol.ReadLineAsync(stream, PipeProtocol.MaxResponseBytes, Ct));
+
+        using var endless = new EndlessStream();
+        await Assert.ThrowsAsync<PipeLineTooLongException>(() => PipeProtocol.ReadLineAsync(endless, PipeProtocol.MaxResponseBytes, Ct));
+        Assert.True(endless.BytesRead <= PipeProtocol.MaxResponseBytes, $"read {endless.BytesRead} bytes");
+    }
+
+    [Fact]
     public async Task WriteLineAsync_appends_newline_and_enforces_the_limit()
     {
         using var stream = new MemoryStream();

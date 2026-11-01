@@ -34,6 +34,25 @@ public sealed class StatusSnapshotTests
     }
 
     [Fact]
+    public void Long_client_info_is_cut_to_128_chars()
+    {
+        var remote = new IPEndPoint(IPAddress.Parse("192.168.1.10"), 50123);
+        var exact = new string('a', 128);
+        var surrogateAtCut = new string('b', 127) + "😀" + "tail"; // the emoji's high surrogate is char 128
+
+        var status = Build(clients:
+        [
+            new ClientInfo(remote, exact + new string('z', 4000), false, false),
+            new ClientInfo(remote, exact, false, false),
+            new ClientInfo(remote, surrogateAtCut, false, false),
+        ]);
+
+        Assert.Equal(exact, status.Clients[0].Info);
+        Assert.Equal(exact, status.Clients[1].Info);
+        Assert.Equal(new string('b', 127), status.Clients[2].Info); // no half pair left at the end
+    }
+
+    [Fact]
     public void Clients_carry_ip_only_info_and_flags()
     {
         var status = Build(clients: [new ClientInfo(new IPEndPoint(IPAddress.Parse("192.168.1.10"), 50123), "Home Assistant 2026.10.4", true, true)]);

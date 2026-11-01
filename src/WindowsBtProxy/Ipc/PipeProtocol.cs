@@ -15,23 +15,37 @@ public static class PipeProtocol
     /// <summary>Protocol version carried in every request and response as <c>v</c>.</summary>
     public const int Version = 1;
 
-    /// <summary>The longest line either side sends or accepts, in bytes, including its <c>\n</c>.</summary>
+    /// <summary>
+    /// The longest request line, in bytes, including its <c>\n</c>. The server reads requests from any local user, so this is small.
+    /// </summary>
     public const int MaxLineBytes = 4096;
+
+    /// <summary>
+    /// The longest response line, in bytes, including its <c>\n</c>. Larger than a request because a status lists every connected
+    /// client; only the client reads it, and only from the service, whose pipe no ordinary user can create (see <see cref="PipeAcl"/>).
+    /// </summary>
+    public const int MaxResponseBytes = 65536;
 
     /// <summary>How long the server waits for a request (and for the client to take the answer) before hanging up.</summary>
     public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(2);
 
+    /// <summary>Reads a request line (at most <see cref="MaxLineBytes"/>); see <see cref="ReadLineAsync(Stream, int, CancellationToken)"/>.</summary>
+    public static Task<string?> ReadLineAsync(Stream stream, CancellationToken ct) => ReadLineAsync(stream, MaxLineBytes, ct);
+
     /// <summary>
     /// Reads one line, up to and without its <c>\n</c>. Returns null at end of stream before a <c>\n</c> (a truncated line is not a line).
-    /// Throws <see cref="PipeLineTooLongException"/> once <see cref="MaxLineBytes"/> bytes have arrived with no <c>\n</c>.
+    /// Throws <see cref="PipeLineTooLongException"/> once <paramref name="maxBytes"/> bytes have arrived with no <c>\n</c>, having read
+    /// no more than that.
     /// </summary>
     /// <remarks>
     /// Reads a byte at a time so nothing past the <c>\n</c> is taken from the stream: the next line stays for the next call.
-    /// Lines are a few hundred bytes and each connection carries one, so the extra reads cost nothing that matters.
+    /// Each connection carries one short line each way (a status is a few hundred bytes to a few kilobytes), so the extra reads
+    /// cost nothing that matters.
     /// </remarks>
-    public static async Task<string?> ReadLineAsync(Stream stream, CancellationToken ct)
+    public static async Task<string?> ReadLineAsync(Stream stream, int maxBytes, CancellationToken ct)
     {
-        var buffer = ArrayPool<byte>.Shared.Rent(MaxLineBytes);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxBytes, 1);
+        var buffer = ArrayPool<byte>.Shared.Rent(maxBytes);
         try
         {
             var length = 0;
@@ -46,9 +60,9 @@ public static class PipeProtocol
                     return Encoding.UTF8.GetString(buffer, 0, length);
                 }
                 length++;
-                if (length == MaxLineBytes)
+                if (length == maxBytes)
                 {
-                    throw new PipeLineTooLongException();
+                    throw new PipeLineTooLongException(maxBytes);
                 }
             }
         }
@@ -58,19 +72,22 @@ public static class PipeProtocol
         }
     }
 
+    /// <summary>Writes a request line (at most <see cref="MaxLineBytes"/>); see <see cref="WriteLineAsync(Stream, string, int, CancellationToken)"/>.</summary>
+    public static Task WriteLineAsync(Stream stream, string json, CancellationToken ct) => WriteLineAsync(stream, json, MaxLineBytes, ct);
+
     /// <summary>Writes <paramref name="json"/> and a <c>\n</c> in one write, then flushes.</summary>
     /// <exception cref="ArgumentException"><paramref name="json"/> contains a <c>\n</c>, which would split it into two lines.</exception>
-    /// <exception cref="PipeLineTooLongException">The line would be longer than <see cref="MaxLineBytes"/>, so the peer would refuse it.</exception>
-    public static async Task WriteLineAsync(Stream stream, string json, CancellationToken ct)
+    /// <exception cref="PipeLineTooLongException">The line would be longer than <paramref name="maxBytes"/>, so the peer would refuse it.</exception>
+    public static async Task WriteLineAsync(Stream stream, string json, int maxBytes, CancellationToken ct)
     {
         if (json.Contains('\n', StringComparison.Ordinal))
         {
             throw new ArgumentException("A pipe line cannot contain a newline.", nameof(json));
         }
         var length = Encoding.UTF8.GetByteCount(json) + 1;
-        if (length > MaxLineBytes)
+        if (length > maxBytes)
         {
-            throw new PipeLineTooLongException();
+            throw new PipeLineTooLongException(maxBytes);
         }
 
         var buffer = ArrayPool<byte>.Shared.Rent(length);
@@ -88,8 +105,8 @@ public static class PipeProtocol
     }
 }
 
-/// <summary>A pipe line longer than <see cref="PipeProtocol.MaxLineBytes"/>: the peer is broken or hostile, so the connection is dropped.</summary>
-public sealed class PipeLineTooLongException() : IOException($"A status pipe line is longer than {PipeProtocol.MaxLineBytes} bytes.");
+/// <summary>A pipe line longer than its limit (<see cref="PipeProtocol.MaxLineBytes"/> or <see cref="PipeProtocol.MaxResponseBytes"/>): the peer is broken or hostile, so the connection is dropped.</summary>
+public sealed class PipeLineTooLongException(int maxBytes) : IOException($"A status pipe line is longer than {maxBytes} bytes.");
 
 /// <summary>The request types the status pipe answers.</summary>
 public static class PipeRequestTypes

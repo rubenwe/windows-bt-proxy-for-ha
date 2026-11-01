@@ -142,7 +142,7 @@ public sealed class StatusPipeServer(
             using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
                 deadline.CancelAfter(PipeProtocol.RequestTimeout);
-                await PipeProtocol.WriteLineAsync(pipe, JsonSerializer.Serialize(response, IpcJsonContext.Default.PipeResponse), deadline.Token).ConfigureAwait(false);
+                await PipeProtocol.WriteLineAsync(pipe, JsonSerializer.Serialize(response, IpcJsonContext.Default.PipeResponse), PipeProtocol.MaxResponseBytes, deadline.Token).ConfigureAwait(false);
                 await WaitForHangUpAsync(pipe, deadline.Token).ConfigureAwait(false);
             }
         }

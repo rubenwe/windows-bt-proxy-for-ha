@@ -45,6 +45,24 @@ public sealed class StatusPipeServerTests
     }
 
     [Fact]
+    public async Task Status_larger_than_a_request_line_round_trips()
+    {
+        // Ruling 9: only requests are held to MaxLineBytes; a status with many clients is far longer.
+        var clients = Enumerable.Range(0, 50)
+            .Select(i => new ClientStatus($"192.168.1.{i}", "Home Assistant 2026.10.4 " + new string('x', 128 - 25), Subscribed: i % 2 == 0, Encrypted: true))
+            .ToList();
+        var big = SampleStatus with { Clients = clients };
+        var bytes = Encoding.UTF8.GetByteCount(System.Text.Json.JsonSerializer.Serialize(new PipeResponse(1, Status: big), IpcJsonContext.Default.PipeResponse));
+        Assert.InRange(bytes, 8_000, 12_000); // about 10 KB: over twice a request line, well under MaxResponseBytes
+        await using var server = Server.Start(status: () => big);
+
+        var response = await StatusPipeClient.RequestAsync(server.Name, PipeRequestTypes.Status, Timeout, Ct);
+
+        Assert.NotNull(response?.Status);
+        Assert.Equal(clients, response.Status.Clients);
+    }
+
+    [Fact]
     public async Task Key_is_denied_to_non_admins()
     {
         var keyCalls = 0;
@@ -316,10 +334,10 @@ public sealed class StatusPipeServerTests
         private readonly CancellationTokenSource _stop = new();
         private readonly Task<bool> _run;
 
-        private Server(string name, Func<NamedPipeServerStream, bool>? isAdministrator, Func<KeyReply> key)
+        private Server(string name, Func<NamedPipeServerStream, bool>? isAdministrator, Func<KeyReply> key, Func<ProxyStatus> status)
         {
             Name = name;
-            _run = new StatusPipeServer(name, () => SampleStatus, key, Log, isAdministrator).RunAsync(_stop.Token);
+            _run = new StatusPipeServer(name, status, key, Log, isAdministrator).RunAsync(_stop.Token);
         }
 
         public string Name { get; }
@@ -327,8 +345,8 @@ public sealed class StatusPipeServerTests
         public ListLogger Log { get; } = new();
 
         /// <param name="isAdministrator">The admin check; null means the real one (<see cref="ClientToken"/>).</param>
-        public static Server Start(Func<NamedPipeServerStream, bool>? isAdministrator = null, Func<KeyReply>? key = null) =>
-            new(UniqueName(), isAdministrator, key ?? (() => new KeyReply(SampleKey)));
+        public static Server Start(Func<NamedPipeServerStream, bool>? isAdministrator = null, Func<KeyReply>? key = null, Func<ProxyStatus>? status = null) =>
+            new(UniqueName(), isAdministrator, key ?? (() => new KeyReply(SampleKey)), status ?? (() => SampleStatus));
 
         public async ValueTask DisposeAsync()
         {

@@ -28,7 +28,7 @@ public static class StatusPipeClient
                 await pipe.ConnectAsync(Timeout.Infinite, deadline.Token).ConfigureAwait(false);
                 var request = JsonSerializer.Serialize(new PipeRequest(PipeProtocol.Version, type), IpcJsonContext.Default.PipeRequest);
                 await PipeProtocol.WriteLineAsync(pipe, request, deadline.Token).ConfigureAwait(false);
-                var line = await PipeProtocol.ReadLineAsync(pipe, deadline.Token).ConfigureAwait(false);
+                var line = await PipeProtocol.ReadLineAsync(pipe, PipeProtocol.MaxResponseBytes, deadline.Token).ConfigureAwait(false);
                 return line is null ? null : JsonSerializer.Deserialize(line, IpcJsonContext.Default.PipeResponse);
             }
         }

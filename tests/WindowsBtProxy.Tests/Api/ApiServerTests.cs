@@ -1,12 +1,9 @@
 using System.Net;
-using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using Google.Protobuf;
-using Microsoft.Extensions.Logging.Abstractions;
 using WindowsBtProxy.Api;
-using WindowsBtProxy.Api.Framing;
 using WindowsBtProxy.Api.Proto;
-using WindowsBtProxy.Ble;
 using WindowsBtProxy.Crypto;
 
 namespace WindowsBtProxy.Tests.Api;
@@ -53,11 +50,11 @@ public class ApiServerTests
     [Fact]
     public async Task DeviceInfo_is_not_provisionable_once_a_key_exists()
     {
-        await using var h = await Harness.StartAsync(encryption: EncryptionState.InMemory(new byte[32]));
-        await using var c = h.Connect();
+        var key = RandomNumberGenerator.GetBytes(32);
+        await using var h = await Harness.StartAsync(encryption: EncryptionState.InMemory(key));
+        await using var c = await h.ConnectNoiseAsync(key); // a keyed device serves Noise only
 
-        await c.SendAsync(new DeviceInfoRequest());
-        var info = Assert.IsType<DeviceInfoResponse>(await c.ReceiveAsync());
+        var info = await c.DeviceInfoAsync();
 
         Assert.True(info.ApiEncryptionSupported);
         Assert.False(info.ApiEncryptionProvisionable);
@@ -251,169 +248,5 @@ public class ApiServerTests
         await TestClient.WaitUntilAsync(() => h.Server.Clients is [{ ClientInfoText: "Home Assistant 2025.6", Encrypted: false, Subscribed: false }]);
         Assert.True(Volatile.Read(ref changes) >= 2); // connected, then hello text known
         Assert.Equal(IPAddress.Loopback, h.Server.Clients[0].Remote.Address);
-    }
-
-    /// <summary>A running server on an ephemeral loopback port plus a fake source.</summary>
-    private sealed class Harness : IAsyncDisposable
-    {
-        private readonly CancellationTokenSource _cts = new();
-        private readonly FakeAdvertisementSource _source;
-        private Task _run = Task.CompletedTask;
-
-        private Harness(ApiServer server, FakeAdvertisementSource source)
-        {
-            Server = server;
-            _source = source;
-        }
-
-        public ApiServer Server { get; }
-
-        public static async Task<Harness> StartAsync(bool startSource = false, EncryptionState? encryption = null)
-        {
-            var source = new FakeAdvertisementSource(TimeSpan.FromMilliseconds(20));
-            var identity = new DeviceIdentity("windows-bt-proxy-334455", "Windows Bluetooth Proxy", 0x021122334455, "TESTPC", "Nov  1 2026, 12:00:00");
-            var server = new ApiServer(new IPEndPoint(IPAddress.Loopback, 0), identity, source, encryption ?? EncryptionState.InMemory(), NullLogger<ApiServer>.Instance, TimeProvider.System);
-            var h = new Harness(server, source);
-            h._run = server.RunAsync(h._cts.Token); // binds the listener before its first await, so LocalEndpoint is valid right away
-            if (startSource)
-            {
-                await source.StartAsync(CancellationToken.None);
-            }
-            return h;
-        }
-
-        public TestClient Connect() => new(Server.LocalEndpoint);
-
-        public async ValueTask DisposeAsync()
-        {
-            await _source.DisposeAsync();
-            await _cts.CancelAsync();
-            await _run.WaitAsync(TimeSpan.FromSeconds(5)); // RunAsync must end cleanly on cancellation
-            _cts.Dispose();
-        }
-    }
-
-    /// <summary>Minimal ESPHome client: plaintext codec over a TCP socket, every wait bounded.</summary>
-    private sealed class TestClient : IAsyncDisposable
-    {
-        private static readonly TimeSpan Limit = TimeSpan.FromSeconds(5);
-        private readonly TcpClient _tcp = new();
-        private readonly NetworkStream _stream;
-        private readonly PlaintextFrameCodec _codec;
-
-        public TestClient(IPEndPoint server)
-        {
-            _tcp.Connect(server);
-            _stream = _tcp.GetStream();
-            _codec = new PlaintextFrameCodec(_stream);
-        }
-
-        public async Task<HelloResponse> HelloAsync()
-        {
-            await SendAsync(new HelloRequest { ClientInfo = "test", ApiVersionMajor = 1, ApiVersionMinor = 10 });
-            return Assert.IsType<HelloResponse>(await ReceiveAsync());
-        }
-
-        public async Task SendAsync(IMessage message)
-        {
-            using var cts = new CancellationTokenSource(Limit);
-            await _codec.WriteAsync(MessageRegistry.IdOf(message), message, cts.Token);
-        }
-
-        public async Task SendRawAsync(int messageId, byte[] payload)
-        {
-            var frame = new List<byte> { 0x00 };
-            frame.AddRange(Encode((uint)payload.Length));
-            frame.AddRange(Encode((uint)messageId));
-            frame.AddRange(payload);
-            await SendBytesAsync(frame.ToArray());
-        }
-
-        public async Task SendBytesAsync(byte[] bytes)
-        {
-            using var cts = new CancellationTokenSource(Limit);
-            await _stream.WriteAsync(bytes, cts.Token);
-            await _stream.FlushAsync(cts.Token);
-        }
-
-        public async Task<IMessage> ReceiveAsync()
-        {
-            var message = await ReceiveOrEofAsync();
-            return message ?? throw new EndOfStreamException("Server closed the connection.");
-        }
-
-        /// <summary>The next message, or null if the server closed the connection (cleanly or by reset).</summary>
-        public async Task<IMessage?> ReceiveOrEofAsync()
-        {
-            using var cts = new CancellationTokenSource(Limit);
-            try
-            {
-                var frame = await _codec.ReadAsync(cts.Token);
-                return frame is { } f ? MessageRegistry.Parse(f.MessageId, f.Payload.Span) : null;
-            }
-            catch (Exception e) when (e is IOException or EndOfStreamException)
-            {
-                return null;
-            }
-        }
-
-        public async Task<T> ReceiveUntilAsync<T>() where T : IMessage
-        {
-            while (true)
-            {
-                if (await ReceiveAsync() is T match) return match;
-            }
-        }
-
-        /// <summary>Reads advertisement batches until at least <paramref name="minAds"/> ads arrived in total.</summary>
-        public async Task<List<BluetoothLERawAdvertisementsResponse>> ReceiveBatchesAsync(int minAds)
-        {
-            var batches = new List<BluetoothLERawAdvertisementsResponse>();
-            var total = 0;
-            while (total < minAds)
-            {
-                var batch = Assert.IsType<BluetoothLERawAdvertisementsResponse>(await ReceiveAsync());
-                batches.Add(batch);
-                total += batch.Advertisements.Count;
-            }
-            return batches;
-        }
-
-        public async Task WaitUntilClosedAsync()
-        {
-            while (await ReceiveOrEofAsync() is not null)
-            {
-            }
-        }
-
-        /// <summary>Closes with a TCP reset instead of a FIN.</summary>
-        public void Abort()
-        {
-            _tcp.Client.LingerState = new LingerOption(true, 0);
-            _tcp.Dispose();
-        }
-
-        public static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null)
-        {
-            var deadline = DateTime.UtcNow + (timeout ?? Limit);
-            while (!condition())
-            {
-                if (DateTime.UtcNow > deadline) throw new TimeoutException("Condition not met in time.");
-                await Task.Delay(10);
-            }
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            _tcp.Dispose();
-            return ValueTask.CompletedTask;
-        }
-
-        private static byte[] Encode(uint value)
-        {
-            var buffer = new byte[Varint.MaxLength];
-            var n = Varint.Write(buffer, value);
-            return buffer[..n];
-        }
     }
 }

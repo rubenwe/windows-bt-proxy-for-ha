@@ -9,19 +9,34 @@ namespace WindowsBtProxy.Api.Framing;
 /// </summary>
 public sealed class PlaintextFrameCodec(Stream stream, int maxPayload = 65536) : IFrameCodec
 {
-    private const byte Preamble = 0x00;
+    internal const byte Preamble = 0x00;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private bool _preambleConsumed;
+
+    /// <summary>For a server that already read the first frame's <c>0x00</c> preamble to choose the transport.</summary>
+    internal PlaintextFrameCodec(Stream stream, bool firstPreambleConsumed, int maxPayload = 65536)
+        : this(stream, maxPayload)
+    {
+        _preambleConsumed = firstPreambleConsumed;
+    }
 
     public async ValueTask<Frame?> ReadAsync(CancellationToken ct)
     {
-        var first = new byte[1];
-        if (await stream.ReadAsync(first, ct).ConfigureAwait(false) == 0)
+        if (_preambleConsumed)
         {
-            return null;
+            _preambleConsumed = false;
         }
-        if (first[0] != Preamble)
+        else
         {
-            throw new InvalidDataException($"Expected plaintext preamble 0x00 but got 0x{first[0]:X2}.");
+            var first = new byte[1];
+            if (await stream.ReadAsync(first, ct).ConfigureAwait(false) == 0)
+            {
+                return null;
+            }
+            if (first[0] != Preamble)
+            {
+                throw new InvalidDataException($"Expected plaintext preamble 0x00 but got 0x{first[0]:X2}.");
+            }
         }
 
         var length = await ReadVarintAsync(ct).ConfigureAwait(false);

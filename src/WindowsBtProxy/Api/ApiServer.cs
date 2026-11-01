@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
+using WindowsBtProxy.Api.Framing;
 using WindowsBtProxy.Ble;
 using WindowsBtProxy.Crypto;
 
@@ -13,6 +14,8 @@ public sealed record ClientInfo(IPEndPoint Remote, string ClientInfoText, bool S
 /// <summary>
 /// ESPHome Native API server: accepts clients, serves each on its own <see cref="ApiConnection"/> and fans advertisements from
 /// <c>source</c> out to every subscribed client. It does not start the source; the host does.
+/// Encryption policy (<see cref="TransportNegotiator"/>): plaintext and zero-PSK Noise only while <c>encryption</c> has no key;
+/// when a client provisions one, every plaintext and zero-PSK session is closed and only keyed Noise is served from then on.
 /// </summary>
 public sealed class ApiServer(
     IPEndPoint endpoint,
@@ -32,8 +35,11 @@ public sealed class ApiServer(
     /// <summary>Snapshot of the connected clients.</summary>
     public IReadOnlyList<ClientInfo> Clients => [.. _connections.Keys.Select(c => c.Info)];
 
-    /// <summary>Raised (from any thread) when a client connects, disconnects, says hello, or (un)subscribes.</summary>
+    /// <summary>Raised (from any thread) when a client connects, negotiates its transport, disconnects, says hello, or (un)subscribes.</summary>
     public event Action? ClientsChanged;
+
+    /// <summary>Time a new connection gets to send its first byte and finish the Noise handshake (pre-authentication). Set before <see cref="RunAsync"/>.</summary>
+    internal TimeSpan HandshakeTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>Listens until <paramref name="ct"/> is cancelled, then closes all clients and returns. The listener is bound before the first await.</summary>
     public async Task RunAsync(CancellationToken ct)
@@ -90,15 +96,31 @@ public sealed class ApiServer(
         }
     }
 
+    /// <summary>After a client provisioned the key: close every session that was not opened with it.</summary>
+    private void CloseUnkeyedSessions()
+    {
+        foreach (var connection in _connections.Keys)
+        {
+            // Sessions still negotiating re-check HasKey once their mode is published (see ApiConnection.NegotiateAsync).
+            if (connection.Mode is TransportMode.Plaintext or TransportMode.ZeroPskNoise)
+            {
+                connection.Cancel();
+            }
+        }
+    }
+
     /// <summary>Owns one client from accept to close. Never throws.</summary>
     private async Task ServeAsync(TcpClient client, CancellationToken ct)
     {
-        var remote = client.Client.RemoteEndPoint as IPEndPoint ?? new IPEndPoint(IPAddress.None, 0);
+        var remote = new IPEndPoint(IPAddress.None, 0);
         ApiConnection? connection = null;
         try
         {
+            // RemoteEndPoint throws if the peer already reset the connection.
+            remote = client.Client.RemoteEndPoint as IPEndPoint ?? remote;
             client.NoDelay = true;
-            connection = new ApiConnection(client, remote, identity, encryption, log, time, RaiseClientsChanged);
+            EnableKeepAlive(client.Client, remote);
+            connection = new ApiConnection(client, remote, identity, encryption, log, time, HandshakeTimeout, RaiseClientsChanged, CloseUnkeyedSessions);
             _connections[connection] = 0;
             log.LogInformation("Client {Remote} connected", remote);
             RaiseClientsChanged();
@@ -128,6 +150,21 @@ public sealed class ApiServer(
             }
             log.LogInformation("Client {Remote} disconnected", remote);
             RaiseClientsChanged();
+        }
+    }
+
+    /// <summary>Detects peers that vanished without a FIN or RST (HA host crash, PC resume after sleep) within about a minute.</summary>
+    private void EnableKeepAlive(Socket socket, IPEndPoint remote)
+    {
+        try
+        {
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 30); // seconds idle before the first probe
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5); // seconds between probes
+        }
+        catch (SocketException e)
+        {
+            log.LogDebug("Could not enable TCP keep-alive for {Remote}: {Reason}", remote, e.Message);
         }
     }
 

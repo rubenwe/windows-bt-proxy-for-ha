@@ -82,7 +82,7 @@ async def test_plaintext_device_info(proxy):
         assert info.api_encryption_supported is True
         assert info.api_encryption_provisionable is True
         assert info.manufacturer == "Windows"
-        assert info.esphome_version == "2025.6.0"
+        assert info.esphome_version == "2026.10.0"
         assert info.name
         assert info.mac_address == info.bluetooth_mac_address
         assert len(mac_hex(info)) == 12

@@ -8,8 +8,12 @@ namespace WindowsBtProxy.Api;
 /// <param name="CompilationTime">Reported build time string.</param>
 public sealed record DeviceIdentity(string Name, string FriendlyName, ulong BluetoothAddress, string Model, string CompilationTime)
 {
-    /// <summary>The ESPHome version reported to Home Assistant, in the device info and in the mDNS TXT records.</summary>
-    public const string EsphomeVersion = "2025.6.0";
+    /// <summary>
+    /// The ESPHome version reported to Home Assistant, in the device info and in the mDNS TXT records. HA raises a
+    /// "ble_firmware_outdated" repair for a Bluetooth proxy below its STABLE_BLE_VERSION (2026.5.1 in HA 2026.10), so keep this
+    /// at or above HA's current value.
+    /// </summary>
+    public const string EsphomeVersion = "2026.10.0";
 
     /// <summary>Upper-case colon-separated address, e.g. <c>02:11:22:33:44:55</c>.</summary>
     public string MacColon

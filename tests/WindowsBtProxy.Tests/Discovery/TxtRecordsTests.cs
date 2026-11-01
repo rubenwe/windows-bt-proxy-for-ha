@@ -21,7 +21,7 @@ public class TxtRecordsTests
         Assert.Equal("zero-psk", txt["api_provisioning"]);
         Assert.DoesNotContain("api_encryption", txt.Keys);
         Assert.Equal("Windows BT Proxy", txt["friendly_name"]);
-        Assert.Equal("2025.6.0", txt["version"]);
+        Assert.Equal("2026.10.0", txt["version"]);
         Assert.Equal("021122334455", txt["mac"]);
         Assert.Equal("Windows", txt["platform"]);
         Assert.Equal("windows", txt["board"]);

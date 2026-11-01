@@ -38,7 +38,7 @@ public class ApiServerTests
         Assert.Equal("Windows Bluetooth Proxy", info.FriendlyName);
         Assert.Equal("02:11:22:33:44:55", info.MacAddress);
         Assert.Equal("02:11:22:33:44:55", info.BluetoothMacAddress);
-        Assert.Equal("2025.6.0", info.EsphomeVersion);
+        Assert.Equal("2026.10.0", info.EsphomeVersion);
         Assert.Equal("Windows", info.Manufacturer);
         Assert.Equal("TESTPC", info.Model);
         Assert.Equal("Nov  1 2026, 12:00:00", info.CompilationTime);

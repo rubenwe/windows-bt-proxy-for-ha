@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ EXE_NAME = "windows-bt-proxy.exe"
 
 STARTUP_TIMEOUT = 30.0
 STOP_TIMEOUT = 10.0
+STATUS_TIMEOUT = 15.0  # the status command itself gives up after a few seconds
 
 
 def free_port() -> int:
@@ -56,7 +58,10 @@ def proxy_exe() -> Path:
 
 
 class ProxyProcess:
-    """One proxy exe on a fixed port and data dir that can be stopped and started again. Always call stop() (the fixture does)."""
+    """
+    One proxy exe on a fixed port, data dir and status pipe that can be stopped and started again. Always call stop() (the
+    fixture does). The pipe name is unique: the installed service owns the default one, which tests must never touch.
+    """
 
     host = "127.0.0.1"
 
@@ -64,6 +69,7 @@ class ProxyProcess:
         self.exe = exe
         self.data_dir = data_dir
         self.port = port
+        self.pipe_name = f"wbp-test-{uuid.uuid4().hex}"
         self.extra_args = extra_args
         self.process: subprocess.Popen | None = None
         self.exit_code: int | None = None  # of the most recent run that ended
@@ -86,8 +92,20 @@ class ProxyProcess:
             str(self.exe), "run", "--fake-scanner", "--no-mdns",
             "--port", str(self.port), "--data-dir", str(self.data_dir),
             "--no-key-acl",  # the key file's SYSTEM/Administrators-only ACL would lock out a test run by a normal user
+            "--pipe-name", self.pipe_name,
             *self.extra_args,
         ]
+
+    def status(self) -> subprocess.CompletedProcess:
+        """Runs `status` against this proxy's pipe (whether or not the proxy is running); stdout and stderr together."""
+        return subprocess.run(
+            [str(self.exe), "status", "--pipe-name", self.pipe_name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=STATUS_TIMEOUT,
+        )
 
     def spawn(self) -> subprocess.Popen:
         """Starts the process without waiting for anything."""

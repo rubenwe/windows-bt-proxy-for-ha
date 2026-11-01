@@ -1,5 +1,6 @@
 using WindowsBtProxy.Config;
 using WindowsBtProxy.Hosting;
+using WindowsBtProxy.Ipc;
 
 namespace WindowsBtProxy.Tests.Hosting;
 
@@ -75,6 +76,53 @@ public sealed class CommandLineTests
         Assert.False(CommandLine.TryParseHostOptions(args, asService: false, out var options, out var error));
         Assert.Null(options);
         Assert.Equal("--fake-scanner is only allowed with a non-default --data-dir", error);
+    }
+
+    [Fact]
+    public void Pipe_name_is_parsed()
+    {
+        Assert.True(CommandLine.TryParseHostOptions([], asService: true, out var normal, out _));
+        Assert.Equal(PipeProtocol.DefaultPipeName, normal!.PipeName);
+        Assert.True(CommandLine.TryParseHostOptions(["--Pipe-Name", "wbp-test-1"], asService: false, out var run, out _));
+        Assert.Equal("wbp-test-1", run!.PipeName);
+        Assert.True(CommandLine.TryParseHostOptions(["--pipe-name", "wbp-test-2"], asService: true, out var service, out _));
+        Assert.Equal("wbp-test-2", service!.PipeName);
+
+        Assert.True(CommandLine.TryParseStatusArgs([], out var defaultName, out var error));
+        Assert.Null(error);
+        Assert.Equal(PipeProtocol.DefaultPipeName, defaultName);
+        Assert.True(CommandLine.TryParseStatusArgs(["--pipe-name", "wbp-test-3"], out var statusName, out _));
+        Assert.Equal("wbp-test-3", statusName);
+    }
+
+    [Theory]
+    [InlineData("--pipe-name")]
+    [InlineData("--pipe-name", "")]
+    [InlineData("--pipe-name", " ")]
+    public void Pipe_name_needs_a_value(params string[] args)
+    {
+        Assert.False(CommandLine.TryParseHostOptions(args, asService: false, out var options, out var error));
+        Assert.Null(options);
+        Assert.Equal("--pipe-name needs a name.", error);
+
+        Assert.False(CommandLine.TryParseStatusArgs(args, out _, out var statusError));
+        Assert.Equal("--pipe-name needs a name.", statusError);
+    }
+
+    [Fact]
+    public void Status_takes_nothing_but_a_pipe_name()
+    {
+        Assert.False(CommandLine.TryParseStatusArgs(["--port", "6053"], out _, out var error));
+        Assert.Equal("Unknown argument \"--port\".", error);
+    }
+
+    [Fact]
+    public void Usage_lists_status_and_tray_but_not_the_test_only_flags()
+    {
+        Assert.Contains("windows-bt-proxy status", CommandLine.Usage, StringComparison.Ordinal);
+        Assert.Contains("windows-bt-proxy tray", CommandLine.Usage, StringComparison.Ordinal);
+        Assert.DoesNotContain("--pipe-name", CommandLine.Usage, StringComparison.Ordinal);
+        Assert.DoesNotContain("--no-key-acl", CommandLine.Usage, StringComparison.Ordinal);
     }
 
     [Theory]

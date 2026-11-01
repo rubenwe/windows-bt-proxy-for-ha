@@ -24,7 +24,7 @@ public sealed class SetupConsoleLogger(TextWriter output) : ILogger
         var text = formatter(state, exception);
         if (exception is not null && logLevel >= LogLevel.Warning)
         {
-            text += ": " + exception.Message;
+            text += " (" + exception.Message + ")";
         }
         output.WriteLine(prefix + text);
     }

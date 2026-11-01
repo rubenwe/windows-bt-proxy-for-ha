@@ -208,6 +208,24 @@ public sealed class SetupCommandsTests : IDisposable
         Assert.False(File.Exists(_box.Data.KeyFile));
     }
 
+    [Theory]
+    [InlineData("show")]
+    [InlineData("rotate")]
+    [InlineData("clear")]
+    public async Task Key_commands_refuse_a_data_dir_with_a_foreign_owned_file(string sub)
+    {
+        Directory.CreateDirectory(_box.Data.Root);
+        File.WriteAllText(_box.Data.KeyFile, "planted");
+        _box.Inspector.Owners[_box.Data.KeyFile] = new System.Security.Principal.SecurityIdentifier("S-1-5-21-1-2-3-1001");
+
+        var code = await Run(["key", sub]);
+
+        Assert.Equal(1, code);
+        Assert.Contains("not owned by SYSTEM or Administrators", _output.ToString());
+        Assert.Equal("planted", File.ReadAllText(_box.Data.KeyFile));
+        Assert.Empty(_runner.Commands);
+    }
+
     [Fact]
     public async Task Key_show_without_a_key_says_ha_will_provision_one()
     {

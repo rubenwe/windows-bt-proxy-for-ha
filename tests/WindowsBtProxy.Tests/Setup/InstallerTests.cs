@@ -400,7 +400,7 @@ public sealed class InstallerTests : IDisposable
 
         var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
 
-        Assert.Equal($"{_box.Data.Root} was created by a non-administrator; delete it and run install again.", e.Message);
+        Assert.Equal($"{_box.Data.Root} is not owned by SYSTEM or Administrators; delete it and run install again.", e.Message);
         Assert.Empty(_runner.Commands);
         Assert.Equal("old build", File.ReadAllText(InstalledExe));
     }
@@ -414,8 +414,26 @@ public sealed class InstallerTests : IDisposable
         var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
 
         Assert.Contains(_box.Data.KeyFile, e.Message);
-        Assert.Contains("non-administrator", e.Message);
+        Assert.Contains("not owned by SYSTEM or Administrators", e.Message);
         Assert.Empty(_runner.Commands);
+    }
+
+    [Fact]
+    public async Task Install_checks_again_after_applying_the_acl_and_aborts_before_reading_a_planted_file()
+    {
+        // Clean at the first check, a user-owned settings.json at the second: someone created it in between.
+        Directory.CreateDirectory(_box.Data.Root);
+        File.WriteAllText(_box.Data.SettingsFile, "garbage that LoadOrCreate would move aside");
+        _box.Inspector.CheckRoot = _box.Data.Root;
+        _box.Inspector.OwnersFromSecondCheck[_box.Data.SettingsFile] = new System.Security.Principal.SecurityIdentifier("S-1-5-21-1-2-3-1001");
+
+        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(CancellationToken.None));
+
+        Assert.Equal(2, _box.Inspector.Checks);
+        Assert.Contains("not owned by SYSTEM or Administrators", e.Message);
+        Assert.Equal("garbage that LoadOrCreate would move aside", File.ReadAllText(_box.Data.SettingsFile));
+        Assert.False(File.Exists(_box.Data.SettingsFile + ".bad")); // LoadOrCreate never ran
+        Assert.DoesNotContain(_runner.Commands, c => c.StartsWith("sc.exe", StringComparison.Ordinal));
     }
 
     [Fact]

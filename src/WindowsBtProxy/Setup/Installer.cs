@@ -189,6 +189,12 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
         {
             Directory.CreateDirectory(paths.Data.Root);
         }
+
+        // The check at the start of install passes trivially on a fresh install, and a normal user could create the folder (and
+        // pre-place settings.json or noise.key in it) between that check and the ACL above. Once Apply has run the folder is owned by
+        // Administrators with a protected ACL, so nobody can add to it any more: whatever is in there now is what we vouch for.
+        DataDirGuard.Verify(paths.Data.Root, paths.DataInspector);
+
         return SettingsStore.LoadOrCreate(paths.Data, Environment.MachineName, log);
     }
 
@@ -274,7 +280,7 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
     private void ScheduleSelfRemoval()
     {
         var dir = Path.TrimEndingDirectorySeparator(paths.ProgramDir);
-        if (!Path.IsPathRooted(dir) || Path.GetFileName(dir) != ServiceName || dir.IndexOfAny(UnsafeInCmdLine) >= 0)
+        if (!Path.IsPathFullyQualified(dir) || Path.GetFileName(dir) != ServiceName || dir.IndexOfAny(UnsafeInCmdLine) >= 0)
         {
             log.LogWarning("Not scheduling removal of {Dir} (unexpected folder name); delete it yourself after this program exits.", paths.ProgramDir);
             return;

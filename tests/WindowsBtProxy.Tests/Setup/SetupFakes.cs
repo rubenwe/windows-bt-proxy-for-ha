@@ -60,9 +60,28 @@ internal sealed class FakeInspector : IDataDirInspector
 
     public SecurityIdentifier DefaultOwner { get; set; } = new(WellKnownSidType.BuiltinAdministratorsSid, null);
 
+    /// <summary>Owners that only show up from the second full check on, i.e. something placed between the first check and the second.</summary>
+    public Dictionary<string, SecurityIdentifier> OwnersFromSecondCheck { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The folder whose inspection marks the start of a check; set to enable <see cref="OwnersFromSecondCheck"/>.</summary>
+    public string? CheckRoot { get; set; }
+
+    public int Checks { get; private set; }
+
     public bool IsReparsePoint(string path) => Links.Contains(path);
 
-    public SecurityIdentifier? GetOwner(string path) => Owners.TryGetValue(path, out var owner) ? owner : DefaultOwner;
+    public SecurityIdentifier? GetOwner(string path)
+    {
+        if (CheckRoot is not null && string.Equals(path, CheckRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            Checks++;
+        }
+        if (Checks >= 2 && OwnersFromSecondCheck.TryGetValue(path, out var late))
+        {
+            return late;
+        }
+        return Owners.TryGetValue(path, out var owner) ? owner : DefaultOwner;
+    }
 }
 
 /// <summary>Temp folders standing in for Program Files and ProgramData, and a fake "running exe" to install.</summary>

@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
 
 namespace WindowsBtProxy.Setup;
 
@@ -11,11 +13,35 @@ public sealed class ProcessRunner : IProcessRunner
 {
     public const int OutputTailLines = 10;
 
+    /// <summary>
+    /// What sc.exe, net.exe and netsh.exe write into a pipe: the OEM code page (850 on a German system), not UTF-8, which would
+    /// garble umlauts in their messages. <c>CultureInfo.TextInfo.OEMCodePage</c> is no help under InvariantGlobalization (it says 437),
+    /// so ask Windows. Code pages other than the built-in ones need the code-pages provider; UTF-8 if anything goes wrong.
+    /// </summary>
+    internal static Encoding OemEncoding { get; } = CreateOemEncoding();
+
+    private static Encoding CreateOemEncoding()
+    {
+        try
+        {
+            return CodePagesEncodingProvider.Instance.GetEncoding((int)GetOEMCP()) ?? Encoding.UTF8;
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException)
+        {
+            return Encoding.UTF8;
+        }
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetOEMCP();
+
     public async Task<ProcessResult> RunAsync(string exe, string args, CancellationToken ct)
     {
         var info = CreateStartInfo(exe, args);
         info.RedirectStandardOutput = true;
         info.RedirectStandardError = true;
+        info.StandardOutputEncoding = OemEncoding;
+        info.StandardErrorEncoding = OemEncoding;
         using var process = Process.Start(info) ?? throw new InvalidOperationException($"Could not start {exe}.");
         // Drain both pipes so a chatty child can never block on a full buffer.
         var stdout = process.StandardOutput.ReadToEndAsync(ct);

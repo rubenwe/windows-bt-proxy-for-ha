@@ -17,7 +17,7 @@ public sealed class SetupConsoleLoggerTests
         log.LogDebug("never shown");
 
         Assert.Equal(
-            $"warning: Could not write settings.json.: disk is full{Environment.NewLine}error: Failed.: boom{Environment.NewLine}Plain info.{Environment.NewLine}",
+            $"warning: Could not write settings.json. (disk is full){Environment.NewLine}error: Failed. (boom){Environment.NewLine}Plain info.{Environment.NewLine}",
             output.ToString());
     }
 }

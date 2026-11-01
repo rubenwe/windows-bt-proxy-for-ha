@@ -53,7 +53,7 @@ public static class DataDirGuard
         var owner = inspector.GetOwner(path);
         if (owner is null || !(owner.IsWellKnown(WellKnownSidType.LocalSystemSid) || owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid)))
         {
-            throw new SetupException($"{path} was created by a non-administrator; delete it and run install again.");
+            throw new SetupException($"{path} is not owned by SYSTEM or Administrators; delete it and run install again.");
         }
         if (Directory.Exists(path))
         {

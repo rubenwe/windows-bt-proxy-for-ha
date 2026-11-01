@@ -38,6 +38,12 @@ public static class DataDirAcl
         {
             info.Create(Build());
         }
+        // Narrow the window between the checks above and the write: a junction swapped in meanwhile must not be re-ACLed.
+        info.Refresh();
+        if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new SetupException($"{path} is a link (junction or symbolic link), not a plain folder; delete it and run install again.");
+        }
         // The descriptor has both the owner and the access rules marked as changed, so both are written.
         info.SetAccessControl(Build());
     }

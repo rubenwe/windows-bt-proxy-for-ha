@@ -15,6 +15,16 @@ public sealed class ProcessRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_decodes_output_in_the_oem_code_page()
+    {
+        // Make cmd write in the code page the runner decodes with, then echo a character that exists in the common OEM pages.
+        var cp = ProcessRunner.OemEncoding.CodePage;
+        var result = await new ProcessRunner().RunAsync("cmd.exe", $"/c chcp {cp} >nul & echo Löschen", CancellationToken.None);
+
+        Assert.Equal("Löschen", result.Output);
+    }
+
+    [Fact]
     public async Task RunAsync_does_not_block_on_chatty_output()
     {
         var code = (await new ProcessRunner().RunAsync("cmd.exe", "/c for /l %i in (1,1,3000) do @echo line %i", CancellationToken.None)).ExitCode;

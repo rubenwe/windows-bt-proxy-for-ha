@@ -12,7 +12,14 @@ public sealed class KeyCommands(SetupContext context)
 {
     private readonly KeyStore _store = new(context.Paths.Data.KeyFile, context.ApplyKeyAcl);
 
-    public Task<int> RunAsync(string subcommand, CancellationToken ct) => subcommand switch
+    public Task<int> RunAsync(string subcommand, CancellationToken ct)
+    {
+        // Same rule as install: do not read from or write into a data folder a normal user could have prepared.
+        DataDirGuard.Verify(context.Paths.Data.Root, context.Paths.DataInspector);
+        return Dispatch(subcommand, ct);
+    }
+
+    private Task<int> Dispatch(string subcommand, CancellationToken ct) => subcommand switch
     {
         "show" => Task.FromResult(Show()),
         "rotate" => RotateAsync(ct),

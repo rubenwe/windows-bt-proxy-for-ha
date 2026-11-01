@@ -1,6 +1,7 @@
 using WindowsBtProxy.Hosting;
 using WindowsBtProxy.Ipc;
 using WindowsBtProxy.Setup;
+using WindowsBtProxy.Tray;
 
 // First, before anything touches Console: the manifest detaches this console-subsystem exe from any console it did not inherit
 // (so `tray` shows no window); every other verb gets its console (or the parent's) back here.
@@ -21,6 +22,10 @@ switch (verb)
     case "version":
         Console.WriteLine(ProxyHost.Version);
         return 0;
+
+    case "tray":
+        // Synchronous on purpose: the tray's window, message loop and mutex all belong to this (the main) thread.
+        return TrayCommand.Run(args);
 
     case "status":
         if (!CommandLine.TryParseStatusArgs(args[1..], out var pipeName, out var statusError))

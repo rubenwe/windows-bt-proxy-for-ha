@@ -1,10 +1,7 @@
 using Google.Protobuf;
+using WindowsBtProxy.Api.Proto;
 
 namespace WindowsBtProxy.Api;
-
-// AuthenticationRequest is marked deprecated in api.proto (removed upstream in ESPHome 2026.1) but is still id 3 on the wire,
-// and is part of the brief's required id set.
-#pragma warning disable CS0612
 
 /// <summary>Maps between ESPHome message ids and the generated protobuf types (no reflection, AOT-safe).</summary>
 public static class MessageRegistry
@@ -14,7 +11,10 @@ public static class MessageRegistry
     {
         HelloRequest => MessageIds.HelloRequest,
         HelloResponse => MessageIds.HelloResponse,
+        // AuthenticationRequest is marked deprecated in api.proto (removed upstream in ESPHome 2026.1) but is still id 3 on the wire,
+#pragma warning disable CS0612
         AuthenticationRequest => MessageIds.AuthenticationRequest,
+#pragma warning restore CS0612
         DisconnectRequest => MessageIds.DisconnectRequest,
         DisconnectResponse => MessageIds.DisconnectResponse,
         PingRequest => MessageIds.PingRequest,
@@ -36,7 +36,9 @@ public static class MessageRegistry
     {
         MessageIds.HelloRequest => HelloRequest.Parser.ParseFrom(payload),
         MessageIds.HelloResponse => HelloResponse.Parser.ParseFrom(payload),
+#pragma warning disable CS0612
         MessageIds.AuthenticationRequest => AuthenticationRequest.Parser.ParseFrom(payload),
+#pragma warning restore CS0612
         MessageIds.DisconnectRequest => DisconnectRequest.Parser.ParseFrom(payload),
         MessageIds.DisconnectResponse => DisconnectResponse.Parser.ParseFrom(payload),
         MessageIds.PingRequest => PingRequest.Parser.ParseFrom(payload),

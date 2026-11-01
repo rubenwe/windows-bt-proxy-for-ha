@@ -2,6 +2,7 @@ using System.Reflection;
 using Google.Protobuf;
 using Google.Protobuf.Reflection;
 using WindowsBtProxy.Api;
+using WindowsBtProxy.Api.Proto;
 
 namespace WindowsBtProxy.Tests.Api;
 
@@ -27,6 +28,30 @@ public class MessageIdsTests
             var id = descriptor.GetOptions().GetExtension(ApiOptionsExtensions.Id);
             Assert.Equal((int)id, (int)constant.GetRawConstantValue()!);
         }
+    }
+
+    [Theory]
+    [InlineData(MessageIds.HelloRequest)]
+    [InlineData(MessageIds.HelloResponse)]
+    [InlineData(MessageIds.AuthenticationRequest)]
+    [InlineData(MessageIds.DisconnectRequest)]
+    [InlineData(MessageIds.DisconnectResponse)]
+    [InlineData(MessageIds.PingRequest)]
+    [InlineData(MessageIds.PingResponse)]
+    [InlineData(MessageIds.DeviceInfoRequest)]
+    [InlineData(MessageIds.DeviceInfoResponse)]
+    [InlineData(MessageIds.ListEntitiesRequest)]
+    [InlineData(MessageIds.ListEntitiesDoneResponse)]
+    [InlineData(MessageIds.SubscribeBluetoothLEAdvertisementsRequest)]
+    [InlineData(MessageIds.UnsubscribeBluetoothLEAdvertisementsRequest)]
+    [InlineData(MessageIds.BluetoothLERawAdvertisementsResponse)]
+    [InlineData(MessageIds.NoiseEncryptionSetKeyRequest)]
+    [InlineData(MessageIds.NoiseEncryptionSetKeyResponse)]
+    public void Registry_round_trips_every_message_id(int id)
+    {
+        var message = MessageRegistry.Parse(id, ReadOnlySpan<byte>.Empty);
+        Assert.NotNull(message);
+        Assert.Equal(id, MessageRegistry.IdOf(message));
     }
 
     [Fact]

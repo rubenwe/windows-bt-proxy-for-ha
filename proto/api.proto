@@ -2,6 +2,8 @@ syntax = "proto3";
 
 import "api_options.proto";
 
+option csharp_namespace = "WindowsBtProxy.Api.Proto";
+
 service APIConnection {
   rpc hello (HelloRequest) returns (HelloResponse) {
     option (needs_setup_connection) = false;

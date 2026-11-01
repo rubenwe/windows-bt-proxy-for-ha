@@ -1,6 +1,7 @@
 using Google.Protobuf;
 using WindowsBtProxy.Api;
 using WindowsBtProxy.Api.Framing;
+using WindowsBtProxy.Api.Proto;
 
 namespace WindowsBtProxy.Tests.Api;
 

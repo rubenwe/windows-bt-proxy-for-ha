@@ -1,6 +1,8 @@
 syntax = "proto2";
 import "google/protobuf/descriptor.proto";
 
+option csharp_namespace = "WindowsBtProxy.Api.Proto";
+
 
 enum APISourceType {
     SOURCE_BOTH = 0;

@@ -35,8 +35,8 @@ public class DnsSdAdvertiserManualTests(ITestOutputHelper output)
             output.WriteLine(line);
         }
 
-        Assert.Contains(log.Lines, l => l.Contains("registered on") && l.Contains("status 0"));
-        Assert.Contains(log.Lines, l => l.Contains("deregistered on") && l.Contains("status 0"));
+        Assert.Contains(log.Lines, l => l.Contains("DNS-SD: registered on") && l.Contains("status 0"));
+        Assert.Contains(log.Lines, l => l.Contains("DNS-SD: deregistered on") && l.Contains("status 0"));
         Assert.DoesNotContain(log.Lines, l => l.StartsWith("Warning"));
     }
 

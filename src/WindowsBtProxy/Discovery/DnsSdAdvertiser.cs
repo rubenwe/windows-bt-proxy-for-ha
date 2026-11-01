@@ -87,11 +87,11 @@ public sealed unsafe partial class DnsSdAdvertiser(ILogger log) : IDisposable
         request->QueryContext = GCHandle.ToIntPtr(registration.Handle);
         registration.Request = request;
 
-        Interlocked.Increment(ref registration.PendingCallbacks); // before the call: the callback may fire inside it
+        registration.Tracker.Expect(); // before the call: the callback may fire inside it
         var status = DnsServiceRegister(request, 0);
         if (status != DnsRequestPending)
         {
-            Interlocked.Decrement(ref registration.PendingCallbacks); // no completion callback will follow
+            registration.Tracker.NoCallback(); // no completion callback will follow
             if (status != 0)
             {
                 log.LogWarning("DNS-SD: DnsServiceRegister failed on {Name}, status {Status}", nic.Name, status);
@@ -152,39 +152,34 @@ public sealed unsafe partial class DnsSdAdvertiser(ILogger log) : IDisposable
         var active = _active;
         _active = [];
 
-        var pending = new List<Registration>();
+        // Announce the deregister callback first, then close: see CompletionTracker for why that order matters. Whatever the
+        // deregister call returns, a registration is only released once every callback it owes us has arrived.
         foreach (var registration in active)
         {
-            registration.Deregistering = true;
-            Interlocked.Increment(ref registration.PendingCallbacks);
+            registration.Tracker.Expect();
+            registration.Tracker.BeginClose();
             var status = DnsServiceDeRegister(registration.Request, 0);
-            if (status == DnsRequestPending)
+            if (status != DnsRequestPending)
             {
-                pending.Add(registration);
-            }
-            else
-            {
-                Interlocked.Decrement(ref registration.PendingCallbacks);
+                registration.Tracker.NoCallback();
                 if (status != 0)
                 {
                     log.LogWarning("DNS-SD: DnsServiceDeRegister failed on {Name}, status {Status}", registration.InterfaceName, status);
                 }
-
-                registration.Release();
             }
         }
 
         var deadline = DateTime.UtcNow + DeregisterTimeout;
-        foreach (var registration in pending)
+        foreach (var registration in active)
         {
             var remaining = deadline - DateTime.UtcNow;
-            if (registration.Done.Wait(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero))
+            if (registration.Tracker.WaitSettled(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero))
             {
                 registration.Release();
             }
             else
             {
-                // The completion callback may still fire, so its context and the instance must stay valid: leak them.
+                // A completion callback may still fire, so its context and the instance must stay valid: leak them.
                 log.LogWarning("DNS-SD: deregistration on {Name} did not complete in time", registration.InterfaceName);
             }
         }
@@ -200,11 +195,15 @@ public sealed unsafe partial class DnsSdAdvertiser(ILogger log) : IDisposable
                 return;
             }
 
-            // The register callback may still be outstanding when deregistration starts, so count callbacks instead of
-            // trusting the flag: only the last one, after Deregistering was set, completes the teardown.
-            var remaining = Interlocked.Decrement(ref registration.PendingCallbacks);
-            var isLast = remaining == 0 && registration.Deregistering;
-            var phase = isLast ? "deregistered" : "registered";
+            // Observed: pInstance is a fresh copy on every callback (never the registered pointer), and the docs make a
+            // non-null one the caller's to free.
+            registration.Log.LogDebug("DNS-SD: callback instance 0x{Callback:X}, registered instance 0x{Registered:X}", instance, registration.Instance);
+            if (instance != 0 && instance != registration.Instance)
+            {
+                DnsServiceFreeInstance(instance);
+            }
+
+            var phase = registration.Tracker.IsLastCallback ? "deregistered" : "registered";
             if (status == 0)
             {
                 registration.Log.LogInformation("DNS-SD: {Phase} on {Name}, status {Status}", phase, registration.InterfaceName, status);
@@ -214,10 +213,8 @@ public sealed unsafe partial class DnsSdAdvertiser(ILogger log) : IDisposable
                 registration.Log.LogWarning("DNS-SD: {Phase} on {Name} failed, status {Status}", phase, registration.InterfaceName, status);
             }
 
-            if (isLast)
-            {
-                registration.Done.Set();
-            }
+            // Last use of the registration: once this settles, Release() may free the context, request and instance.
+            registration.Tracker.Arrived();
         }
         catch
         {
@@ -228,22 +225,20 @@ public sealed unsafe partial class DnsSdAdvertiser(ILogger log) : IDisposable
     /// <summary>One service instance on one interface, with everything the native API still points at.</summary>
     private sealed class Registration(ILogger log, string interfaceName, nint instance)
     {
+        public nint Instance { get; } = instance;
         public ILogger Log { get; } = log;
         public string InterfaceName { get; } = interfaceName;
         public GCHandle Handle { get; set; }
         public DnsServiceRegisterRequest* Request { get; set; }
-        public volatile bool Deregistering;
-        public int PendingCallbacks;
-        public ManualResetEventSlim Done { get; } = new();
+        public CompletionTracker Tracker { get; } = new();
 
         /// <summary>Frees the native instance and request and the callback context. Only call once the API is done with them.</summary>
         public void Release()
         {
-            DnsServiceFreeInstance(instance);
+            DnsServiceFreeInstance(Instance);
             NativeMemory.Free(Request);
             Request = null;
             Handle.Free();
-            Done.Dispose();
         }
     }
 

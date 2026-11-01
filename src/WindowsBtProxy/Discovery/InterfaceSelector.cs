@@ -72,15 +72,15 @@ public sealed record NetInterface(
 /// <summary>Chooses the interfaces the proxy advertises itself on.</summary>
 public static class InterfaceSelector
 {
-    private static readonly string[] VirtualMarkers =
+    internal static readonly string[] VirtualMarkers =
     [
         "tailscale", "wireguard", "wintun", "hyper-v", "vethernet", "wsl", "vpn", "tap-", "zerotier", "virtualbox", "vmware",
     ];
 
     /// <summary>
     /// Pinned names (case-insensitive match on <see cref="NetInterface.Name"/>) win and are taken as-is. If none of them
-    /// exists, or nothing is pinned, every up interface with an IPv4 address that is not loopback, tunnel or a known
-    /// virtual adapter is selected.
+    /// exists, or nothing is pinned, every up interface with a usable IPv4 address (not link-local 169.254.x.x) that is
+    /// not loopback, tunnel or a known virtual adapter is selected.
     /// </summary>
     public static IReadOnlyList<NetInterface> Select(IEnumerable<NetInterface> all, string[]? pinned)
     {
@@ -103,8 +103,15 @@ public static class InterfaceSelector
     private static bool IsAdvertisable(NetInterface i)
         => i.IsUp
            && i.IPv4 is not null
+           && !IsLinkLocal(i.IPv4)
            && i.Type is not (NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)
            && !IsVirtual(i);
+
+    private static bool IsLinkLocal(IPAddress address)
+    {
+        var bytes = address.GetAddressBytes();
+        return bytes.Length == 4 && bytes[0] == 169 && bytes[1] == 254;
+    }
 
     private static bool IsVirtual(NetInterface i)
         => VirtualMarkers.Any(m =>

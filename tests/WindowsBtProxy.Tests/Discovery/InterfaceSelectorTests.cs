@@ -38,6 +38,35 @@ public class InterfaceSelectorTests
         Assert.Equal([Tailscale], selected);
     }
 
+    public static TheoryData<string> Markers => new(InterfaceSelector.VirtualMarkers);
+
+    [Theory]
+    [MemberData(nameof(Markers))]
+    public void Excludes_every_virtual_marker_in_name_or_description(string marker)
+    {
+        var byName = Nic(20, $"My {marker.ToUpperInvariant()} 1", "Some adapter", NetworkInterfaceType.Ethernet);
+        var byDescription = Nic(21, "Ethernet 9", $"Acme {marker} Adapter", NetworkInterfaceType.Ethernet);
+
+        Assert.Equal([Ethernet], InterfaceSelector.Select([Ethernet, byName, byDescription], null));
+    }
+
+    [Fact]
+    public void Marker_list_covers_the_documented_adapters()
+    {
+        Assert.Equal(
+            ["tailscale", "wireguard", "wintun", "hyper-v", "vethernet", "wsl", "vpn", "tap-", "zerotier", "virtualbox", "vmware"],
+            InterfaceSelector.VirtualMarkers);
+    }
+
+    [Fact]
+    public void Link_local_only_interface_is_excluded_but_pinned_wins()
+    {
+        var apipa = Nic(22, "Ethernet 4", "Intel NIC", NetworkInterfaceType.Ethernet, ip: "169.254.12.34");
+
+        Assert.Equal([Ethernet], InterfaceSelector.Select([apipa, Ethernet], null));
+        Assert.Equal([apipa], InterfaceSelector.Select([apipa, Ethernet], ["ethernet 4"]));
+    }
+
     [Fact]
     public void Pinned_name_that_matches_nothing_falls_back_to_automatic_selection()
     {

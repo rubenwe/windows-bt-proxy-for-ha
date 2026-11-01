@@ -199,6 +199,22 @@ public class NoiseFrameCodecTests
     }
 
     [Fact]
+    public async Task Server_handshake_rejects_oversized_handshake_frame_without_reading_it()
+    {
+        // Before the handshake completes ESPHome accepts frames of at most 128 bytes.
+        var input = new MemoryStream([.. Frame([]), 0x01, 0x00, 129, .. new byte[129]]);
+        var output = new MemoryStream();
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            NoiseServerHandshake.RunAsync(new DuplexStream(input, output), new byte[32], "n", "m", CancellationToken.None));
+
+        var written = new MemoryStream(output.ToArray());
+        ReadFrame(written); // server hello
+        Assert.Equal([0x01, .. "Bad handshake packet len"u8], ReadFrame(written));
+        Assert.Equal(6, input.Position); // the 129-byte body was never read
+    }
+
+    [Fact]
     public async Task Server_handshake_eof_throws_EndOfStreamException()
     {
         var input = new MemoryStream(Frame([]));

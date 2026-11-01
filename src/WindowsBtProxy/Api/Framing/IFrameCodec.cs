@@ -11,6 +11,9 @@ public interface IFrameCodec
     /// <summary>Reads the next frame, or returns null on a clean end of stream (no bytes of a new frame received).</summary>
     ValueTask<Frame?> ReadAsync(CancellationToken ct);
 
-    /// <summary>Writes <paramref name="message"/> as a frame with id <paramref name="messageId"/>.</summary>
+    /// <summary>
+    /// Writes <paramref name="message"/> as a frame with id <paramref name="messageId"/>. If this is cancelled or throws,
+    /// a partial frame may be on the wire (and a Noise nonce spent): the codec is unusable and the connection must close.
+    /// </summary>
     ValueTask WriteAsync(int messageId, IMessage message, CancellationToken ct);
 }

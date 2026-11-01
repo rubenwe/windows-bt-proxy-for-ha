@@ -10,6 +10,8 @@ namespace WindowsBtProxy.Api.Framing;
 /// Owns and disposes the two ciphers. <see cref="WriteAsync"/> is safe to call from several tasks (encryption happens
 /// under the write lock so nonces reach the wire in order); <see cref="ReadAsync"/> must have a single reader.
 /// Any decryption failure surfaces as <see cref="System.Security.Cryptography.CryptographicException"/>: treat the connection as dead.
+/// A <see cref="WriteAsync"/> that is cancelled or fails after it took the write lock may have consumed a nonce and put a
+/// partial frame on the wire: the codec is then unusable and the owner must close the connection.
 /// </summary>
 public sealed class NoiseFrameCodec(Stream stream, CipherState send, CipherState receive, int maxPayload = 65536) : IFrameCodec, IDisposable
 {
@@ -86,7 +88,7 @@ public sealed class NoiseFrameCodec(Stream stream, CipherState send, CipherState
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(plaintext);
+            ArrayPool<byte>.Shared.Return(plaintext, clearArray: true); // it held a message in the clear
             ArrayPool<byte>.Shared.Return(frame);
         }
     }
@@ -122,11 +124,17 @@ public sealed class NoiseFrameCodec(Stream stream, CipherState send, CipherState
     /// <summary>Reads the 16-bit length and payload that follow the indicator byte.</summary>
     internal static async ValueTask<byte[]> ReadFrameBodyAsync(Stream stream, CancellationToken ct)
     {
-        var lengthBytes = new byte[2];
-        await stream.ReadExactlyAsync(lengthBytes, ct).ConfigureAwait(false);
-        var payload = new byte[(lengthBytes[0] << 8) | lengthBytes[1]];
+        var payload = new byte[await ReadFrameLengthAsync(stream, ct).ConfigureAwait(false)];
         await stream.ReadExactlyAsync(payload, ct).ConfigureAwait(false);
         return payload;
+    }
+
+    /// <summary>Reads the 16-bit big-endian length that follows the indicator byte.</summary>
+    internal static async ValueTask<int> ReadFrameLengthAsync(Stream stream, CancellationToken ct)
+    {
+        var lengthBytes = new byte[2];
+        await stream.ReadExactlyAsync(lengthBytes, ct).ConfigureAwait(false);
+        return (lengthBytes[0] << 8) | lengthBytes[1];
     }
 
     internal static InvalidDataException BadIndicator(byte indicator) => new(indicator == 0x00

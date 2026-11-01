@@ -195,26 +195,32 @@ public sealed unsafe partial class DnsSdAdvertiser(ILogger log) : IDisposable
                 return;
             }
 
-            // Observed: pInstance is a fresh copy on every callback (never the registered pointer), and the docs make a
-            // non-null one the caller's to free.
-            registration.Log.LogDebug("DNS-SD: callback instance 0x{Callback:X}, registered instance 0x{Registered:X}", instance, registration.Instance);
-            if (instance != 0 && instance != registration.Instance)
+            try
             {
-                DnsServiceFreeInstance(instance);
-            }
+                // Observed: pInstance is a fresh copy on every callback (never the registered pointer), and the docs make a
+                // non-null one the caller's to free.
+                registration.Log.LogDebug("DNS-SD: callback instance 0x{Callback:X}, registered instance 0x{Registered:X}", instance, registration.Instance);
+                if (instance != 0 && instance != registration.Instance)
+                {
+                    DnsServiceFreeInstance(instance);
+                }
 
-            var phase = registration.Tracker.IsLastCallback ? "deregistered" : "registered";
-            if (status == 0)
-            {
-                registration.Log.LogInformation("DNS-SD: {Phase} on {Name}, status {Status}", phase, registration.InterfaceName, status);
+                var phase = registration.Tracker.IsLastCallback ? "deregistered" : "registered";
+                if (status == 0)
+                {
+                    registration.Log.LogInformation("DNS-SD: {Phase} on {Name}, status {Status}", phase, registration.InterfaceName, status);
+                }
+                else
+                {
+                    registration.Log.LogWarning("DNS-SD: {Phase} on {Name} failed, status {Status}", phase, registration.InterfaceName, status);
+                }
             }
-            else
+            finally
             {
-                registration.Log.LogWarning("DNS-SD: {Phase} on {Name} failed, status {Status}", phase, registration.InterfaceName, status);
+                // Last use of the registration, even if logging threw: once this settles, Release() may free the
+                // context, request and instance.
+                registration.Tracker.Arrived();
             }
-
-            // Last use of the registration: once this settles, Release() may free the context, request and instance.
-            registration.Tracker.Arrived();
         }
         catch
         {

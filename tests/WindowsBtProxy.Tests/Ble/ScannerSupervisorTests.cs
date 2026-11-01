@@ -15,6 +15,7 @@ public class ScannerSupervisorTests
     private sealed class Rig : IAsyncDisposable
     {
         private readonly Func<int, ControllableAdvertisementSource, ControllableAdvertisementSource> _configure;
+        private readonly SemaphoreSlim _built = new(0);
 
         public Rig(Action<int, ControllableAdvertisementSource>? configure = null, Func<int, bool>? factoryThrows = null)
         {
@@ -31,6 +32,7 @@ public class ScannerSupervisorTests
                 if (factoryThrows?.Invoke(attempt) == true) throw new InvalidOperationException("factory failed");
                 var source = _configure(Created.Count, new ControllableAdvertisementSource());
                 Created.Add(source);
+                _built.Release();
                 return source;
             }, Time, NullLogger.Instance);
             Statuses = new StatusLog(Supervisor);
@@ -43,6 +45,13 @@ public class ScannerSupervisorTests
         public List<ControllableAdvertisementSource> Created { get; } = [];
 
         public StatusLog Statuses { get; }
+
+        /// <summary>Waits until the factory has built a source (StartAsync builds it on the pool, not before it returns).</summary>
+        public async Task<ControllableAdvertisementSource> NextBuiltSourceAsync()
+        {
+            if (!await _built.WaitAsync(TimeSpan.FromSeconds(10))) throw new TimeoutException("The factory was not called.");
+            return Created[^1];
+        }
 
         public ValueTask DisposeAsync() => Supervisor.DisposeAsync();
     }
@@ -340,12 +349,13 @@ public class ScannerSupervisorTests
         await using var rig = new Rig((_, s) => s.StartBehavior = (_, ct) => Task.Delay(Timeout.Infinite, ct));
 
         var start = rig.Supervisor.StartAsync(cts.Token);
-        await rig.Created.Single().NextStartCallAsync();
+        var inner = await rig.NextBuiltSourceAsync();
+        await inner.NextStartCallAsync();
         await cts.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
         rig.Time.Advance(TimeSpan.FromMinutes(5));
-        Assert.Equal(1, rig.Created.Single().StartCalls);
+        Assert.Equal(1, inner.StartCalls);
     }
 
     [Fact]
@@ -378,5 +388,69 @@ public class ScannerSupervisorTests
         rig.Created.Single().Emit(Ad());
 
         Assert.Equal(ScannerStatus.Running, rig.Supervisor.Status);
+    }
+
+    [Fact]
+    public async Task Disposing_while_the_first_start_is_in_flight_releases_the_caller_and_disposes_the_source()
+    {
+        await using var rig = new Rig((_, s) => s.StartBehavior = (_, ct) => Task.Delay(Timeout.Infinite, ct));
+
+        var start = rig.Supervisor.StartAsync(TestContext.Current.CancellationToken);
+        var inner = await rig.NextBuiltSourceAsync();
+        await inner.NextStartCallAsync();
+        await rig.Supervisor.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.Equal(1, inner.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task A_source_built_while_disposing_is_disposed_too()
+    {
+        using var factoryEntered = new ManualResetEventSlim();
+        using var releaseFactory = new ManualResetEventSlim();
+        var created = new List<ControllableAdvertisementSource>();
+        await using var supervisor = new ScannerSupervisor(() =>
+        {
+            factoryEntered.Set();
+            releaseFactory.Wait(TimeSpan.FromSeconds(10));
+            var source = new ControllableAdvertisementSource();
+            created.Add(source);
+            return source;
+        }, TimeProvider.System, NullLogger.Instance);
+
+        var start = supervisor.StartAsync(TestContext.Current.CancellationToken);
+        Assert.True(factoryEntered.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        var dispose = supervisor.DisposeAsync().AsTask();
+        releaseFactory.Set();
+
+        await dispose.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        var source = Assert.Single(created);
+        Assert.Equal(0, source.StartCalls);
+        Assert.Equal(1, source.DisposeCalls);
+        Assert.Equal(0, source.ReceivedSubscribers + source.StatusSubscribers);
+    }
+
+    [Fact]
+    public async Task Disposing_right_after_starting_never_leaks_a_source_or_hangs_the_caller()
+    {
+        for (var i = 0; i < 300; i++)
+        {
+            var rig = new Rig();
+            var start = rig.Supervisor.StartAsync(TestContext.Current.CancellationToken);
+            await rig.Supervisor.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            try
+            {
+                await start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // dispose won the race
+            }
+
+            Assert.All(rig.Created, source => Assert.Equal(1, source.DisposeCalls));
+        }
     }
 }

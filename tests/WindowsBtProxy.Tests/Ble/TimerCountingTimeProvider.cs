@@ -28,5 +28,8 @@ internal sealed class TimerCountingTimeProvider(FakeTimeProvider inner) : TimePr
     public void Advance(TimeSpan by) => inner.Advance(by);
 
     /// <summary>Completes once one more timer has been created than the previous wait consumed.</summary>
-    public async Task NextTimerAsync() => await _created.WaitAsync(TimeSpan.FromSeconds(10));
+    public async Task NextTimerAsync()
+    {
+        if (!await _created.WaitAsync(TimeSpan.FromSeconds(10))) throw new TimeoutException("No timer was created.");
+    }
 }

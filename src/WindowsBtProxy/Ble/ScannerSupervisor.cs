@@ -47,21 +47,28 @@ public sealed class ScannerSupervisor : IAdvertisementSource
     public async Task StartAsync(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _state) == 2, this);
-        var previous = Interlocked.CompareExchange(ref _state, 1, 0);
-        ObjectDisposedException.ThrowIf(previous == 2, this);
-        if (previous != 0) throw new InvalidOperationException("Already started.");
 
         var firstAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        Volatile.Write(ref _loop, RunAsync(ct, firstAttempt));
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_state == 2, this);
+            if (_state != 0) throw new InvalidOperationException("Already started.");
+
+            // Published under the same lock DisposeAsync reads it under, and handed to the pool so nothing (factory, inner start)
+            // runs before the loop is visible: a dispose can never find "started" with no loop to wait for.
+            _state = 1;
+            _loop = Task.Run(() => RunAsync(ct, firstAttempt), CancellationToken.None);
+        }
+
         await firstAttempt.Task.ConfigureAwait(false);
     }
 
     private async Task RunAsync(CancellationToken startCt, TaskCompletionSource firstAttempt)
     {
-        var ct = _stop.Token;
         try
         {
+            var ct = _stop.Token;
+            ct.ThrowIfCancellationRequested();
             using (var linked = CancellationTokenSource.CreateLinkedTokenSource(startCt, ct))
             {
                 await AttemptAsync(linked.Token).ConfigureAwait(false);
@@ -95,6 +102,11 @@ public sealed class ScannerSupervisor : IAdvertisementSource
             _log.LogError(e, "Scanner supervision stopped unexpectedly");
             firstAttempt.TrySetException(e);
         }
+        finally
+        {
+            // However the loop ends (disposed, cancelled, crashed), a caller still waiting on the first attempt is released.
+            firstAttempt.TrySetCanceled();
+        }
     }
 
     private async Task AttemptAsync(CancellationToken ct)
@@ -103,6 +115,10 @@ public sealed class ScannerSupervisor : IAdvertisementSource
         try
         {
             slot = await ObtainSlotAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested || Volatile.Read(ref _state) == 2)
+        {
+            throw;
         }
         catch (Exception e)
         {
@@ -140,9 +156,18 @@ public sealed class ScannerSupervisor : IAdvertisementSource
         fresh.Source.Received += fresh.OnReceived;
         fresh.Source.StatusChanged += fresh.OnStatus;
 
+        bool disposed;
         lock (_gate)
         {
-            Volatile.Write(ref _slot, fresh);
+            disposed = _state == 2;
+            if (!disposed) Volatile.Write(ref _slot, fresh);
+        }
+
+        if (disposed)
+        {
+            // Disposed while the factory ran: nobody will ever own this source, so it must not outlive us.
+            await DetachAsync(fresh).ConfigureAwait(false);
+            throw new OperationCanceledException();
         }
 
         if (current is not null)
@@ -223,10 +248,16 @@ public sealed class ScannerSupervisor : IAdvertisementSource
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _state, 2) == 2) return;
+        Task? loop;
+        lock (_gate)
+        {
+            if (_state == 2) return;
+
+            _state = 2;
+            loop = _loop;
+        }
 
         await _stop.CancelAsync().ConfigureAwait(false);
-        var loop = Volatile.Read(ref _loop);
         if (loop is not null) await loop.ConfigureAwait(false);
 
         Slot? slot;

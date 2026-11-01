@@ -44,7 +44,10 @@ internal sealed class ControllableAdvertisementSource : IAdvertisementSource
     }
 
     /// <summary>Completes once <see cref="StartAsync"/> has been called one more time than the last wait consumed.</summary>
-    public async Task NextStartCallAsync() => await _startSignal.WaitAsync(TimeSpan.FromSeconds(10));
+    public async Task NextStartCallAsync()
+    {
+        if (!await _startSignal.WaitAsync(TimeSpan.FromSeconds(10))) throw new TimeoutException("StartAsync was not called.");
+    }
 
     /// <summary>Changes the status the way a real source would: record it, then announce it.</summary>
     public void Set(ScannerStatus status)

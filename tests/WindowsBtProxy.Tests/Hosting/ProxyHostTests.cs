@@ -1,9 +1,12 @@
+using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging.Abstractions;
+using WindowsBtProxy.Ble;
 using WindowsBtProxy.Config;
 using WindowsBtProxy.Tests.Api;
 using WindowsBtProxy.Crypto;
 using WindowsBtProxy.Hosting;
+using WindowsBtProxy.Ipc;
 using WindowsBtProxy.Setup;
 
 namespace WindowsBtProxy.Tests.Hosting;
@@ -166,5 +169,107 @@ public sealed class ProxyHostTests : IDisposable
     public void A_trusted_data_dir_is_not_a_failure()
     {
         Assert.Null(new DataDirProtector(_ => { }, _ => { }).TryProtect(@"C:\data"));
+    }
+
+    private static string UniquePipeName() => $"wbp-test-{Guid.NewGuid():N}";
+
+    [Fact]
+    public async Task Status_pipe_serves_the_running_proxy()
+    {
+        var options = Options() with { PipeName = UniquePipeName() };
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = ProxyHost.RunAsync(options, cts.Token, protector: null);
+
+        ProxyStatus? status = null;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (status is not { Scanner: ScannerStatus.Running, ApiRunning: true })
+        {
+            Assert.True(DateTime.UtcNow < deadline, $"the proxy never reported running over the pipe (last: {status})");
+            Assert.False(run.IsCompleted, "the host stopped");
+            status = (await StatusPipeClient.RequestAsync(options.PipeName, PipeRequestTypes.Status, TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken))?.Status;
+            if (status is not { Scanner: ScannerStatus.Running, ApiRunning: true })
+            {
+                await Task.Delay(50, TestContext.Current.CancellationToken);
+            }
+        }
+
+        var settings = SettingsStore.LoadOrCreate(options.Paths, Environment.MachineName, NullLogger.Instance);
+        Assert.Equal(settings.Name, status.Name);
+        Assert.Equal(settings.FriendlyName, status.FriendlyName);
+        Assert.Equal(EncryptionMode.Provisionable, status.Encryption);
+        Assert.Empty(status.Clients);
+        Assert.NotNull(status.AdapterMac);
+        Assert.Null(status.AdvertisementsLastMinute); // the first count comes after a minute
+        Assert.Equal(ProxyHost.Version, status.Version);
+
+        await cts.CancelAsync();
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+        // Shutdown closed the pipe: nobody answers on the name any more.
+        Assert.Null(await StatusPipeClient.RequestAsync(options.PipeName, PipeRequestTypes.Status, TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Pipe_name_in_use_is_not_fatal()
+    {
+        var name = UniquePipeName();
+        using var holderStop = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var holderStatus = new ProxyStatus("other", "other", "Other", 1, ScanMode.Passive, ScannerStatus.Running, null, true, null, EncryptionMode.Required, []);
+        var holder = new StatusPipeServer(name, () => holderStatus, () => new KeyReply(null), NullLogger.Instance).RunAsync(holderStop.Token);
+        Assert.NotNull(await StatusPipeClient.RequestAsync(name, PipeRequestTypes.Status, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+
+        var port = FreePort();
+        var options = Options() with { PipeName = name, PortOverride = port };
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = ProxyHost.RunAsync(options, cts.Token, protector: null);
+
+        await TestClient.WaitUntilAsync(() => run.IsCompleted || Accepts(port), TimeSpan.FromSeconds(30));
+        Assert.False(run.IsCompleted, "the host stopped");
+        await TestClient.WaitUntilAsync(() => Log(options).Contains("Proxy is running", StringComparison.Ordinal), TimeSpan.FromSeconds(10));
+        Assert.Contains($"WARN WindowsBtProxy: The status pipe {name} is already in use (another copy of the proxy running?); the tray and the status command will not see this one.", Log(options), StringComparison.Ordinal);
+        // The first server still owns the name and answers with its own status.
+        Assert.Equal("other", (await StatusPipeClient.RequestAsync(name, PipeRequestTypes.Status, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken))?.Status?.Name);
+
+        await cts.CancelAsync();
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+        await holderStop.CancelAsync();
+        Assert.True(await holder.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+    }
+
+    private static int FreePort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
+    }
+
+    private static bool Accepts(int port)
+    {
+        try
+        {
+            using var client = new TcpClient();
+            client.Connect(IPAddress.Loopback, port);
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The host's log so far (the file logger writes each line through, so this is current).</summary>
+    private static string Log(ProxyHostOptions options)
+    {
+        try
+        {
+            using var stream = new FileStream(Path.Combine(options.Paths.LogDir, "proxy.log"), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            return reader.ReadToEnd();
+        }
+        catch (IOException)
+        {
+            return string.Empty;
+        }
     }
 }

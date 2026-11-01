@@ -1,14 +1,17 @@
 using WindowsBtProxy.Config;
+using WindowsBtProxy.Ipc;
 
 namespace WindowsBtProxy.Hosting;
 
-/// <summary>Parses the arguments of <c>run</c> and <c>service</c>.</summary>
+/// <summary>Parses the arguments of <c>run</c>, <c>service</c> and <c>status</c>.</summary>
 public static class CommandLine
 {
     public const string Usage =
         "Usage:\n" +
         "  windows-bt-proxy run [--data-dir <dir>] [--fake-scanner] [--no-mdns] [--port <n>]   run in this console (Ctrl+C stops)\n" +
         "  windows-bt-proxy service                                                            what the Windows service starts\n" +
+        "  windows-bt-proxy status                                                             what the running service is doing\n" +
+        "  windows-bt-proxy tray                                                               the notification-area icon (started at sign-in)\n" +
         "  windows-bt-proxy install | uninstall [--keep-settings] | key show|rotate|clear      see the README\n" +
         "  windows-bt-proxy version";
 
@@ -24,6 +27,7 @@ public static class CommandLine
         var fakeScanner = false;
         var noMdns = false;
         var protectKeyFile = true;
+        var pipeName = PipeProtocol.DefaultPipeName;
         int? port = null;
 
         for (var i = 0; i < args.Count; i++)
@@ -41,6 +45,14 @@ public static class CommandLine
             {
                 // Deliberately not in the usage text: only for the interop tests, which run as a normal user.
                 protectKeyFile = false;
+            }
+            else if (Is(arg, "--pipe-name"))
+            {
+                // Not in the usage text either: tests run their own proxies beside the installed service, which owns the default name.
+                if (!TryReadPipeName(args, ref i, out pipeName, out error))
+                {
+                    return false;
+                }
             }
             else if (Is(arg, "--data-dir"))
             {
@@ -82,7 +94,44 @@ public static class CommandLine
             return false;
         }
         // A fake proxy must never announce itself to the network (and so to Home Assistant).
-        options = new ProxyHostOptions(paths, asService, fakeScanner, noMdns || fakeScanner, port, protectKeyFile);
+        options = new ProxyHostOptions(paths, asService, fakeScanner, noMdns || fakeScanner, port, protectKeyFile, pipeName);
+        return true;
+    }
+
+    /// <summary>
+    /// Parses what follows <c>status</c>: only <c>--pipe-name</c>, which tests use to ask their own proxy. On failure
+    /// <paramref name="error"/> says what is wrong.
+    /// </summary>
+    public static bool TryParseStatusArgs(IReadOnlyList<string> args, out string pipeName, out string? error)
+    {
+        pipeName = PipeProtocol.DefaultPipeName;
+        error = null;
+        for (var i = 0; i < args.Count; i++)
+        {
+            if (!Is(args[i], "--pipe-name"))
+            {
+                error = $"Unknown argument \"{args[i]}\".";
+                return false;
+            }
+            if (!TryReadPipeName(args, ref i, out pipeName, out error))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>Reads the value after <c>--pipe-name</c> at <paramref name="i"/> and moves <paramref name="i"/> onto it.</summary>
+    private static bool TryReadPipeName(IReadOnlyList<string> args, ref int i, out string pipeName, out string? error)
+    {
+        if (i + 1 >= args.Count || string.IsNullOrWhiteSpace(args[i + 1]))
+        {
+            pipeName = PipeProtocol.DefaultPipeName;
+            error = "--pipe-name needs a name.";
+            return false;
+        }
+        pipeName = args[++i];
+        error = null;
         return true;
     }
 

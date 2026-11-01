@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Security.Cryptography;
 using ServiceBase = System.ServiceProcess.ServiceBase;
 using Microsoft.Extensions.DependencyInjection;
@@ -13,6 +14,7 @@ using WindowsBtProxy.Ble;
 using WindowsBtProxy.Config;
 using WindowsBtProxy.Crypto;
 using WindowsBtProxy.Discovery;
+using WindowsBtProxy.Ipc;
 using WindowsBtProxy.Setup;
 
 namespace WindowsBtProxy.Hosting;
@@ -23,7 +25,8 @@ namespace WindowsBtProxy.Hosting;
 /// <param name="NoMdns">Do not register with DNS-SD.</param>
 /// <param name="PortOverride">TCP port to listen on instead of the one in settings.json.</param>
 /// <param name="ProtectKeyFile">Create noise.key with an ACL of SYSTEM and Administrators only (always, in production). Off only for tests that run as a normal user (<c>--no-key-acl</c>).</param>
-public sealed record ProxyHostOptions(DataPaths Paths, bool AsService, bool FakeScanner, bool NoMdns, int? PortOverride, bool ProtectKeyFile = true);
+/// <param name="PipeName">The status pipe to serve. The default in production; tests pass a unique one (<c>--pipe-name</c>) because the installed service owns the default.</param>
+public sealed record ProxyHostOptions(DataPaths Paths, bool AsService, bool FakeScanner, bool NoMdns, int? PortOverride, bool ProtectKeyFile = true, string PipeName = PipeProtocol.DefaultPipeName);
 
 /// <summary>Process exit codes of <c>run</c> and <c>service</c>.</summary>
 public static class ExitCodes
@@ -53,6 +56,10 @@ public static class ProxyHost
 {
     /// <summary>Time the host gives <see cref="ProxyRuntime"/> to wind down (close clients, stop the scanner, deregister DNS-SD).</summary>
     internal static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(20);
+
+    /// <summary>The informational version of this exe: what <c>version</c> prints and the status pipe reports.</summary>
+    internal static string Version { get; } =
+        typeof(ProxyHost).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown";
 
     /// <summary>Returns when the host has stopped (Ctrl+C, service stop, <paramref name="ct"/> cancelled, or a fatal error): the process exit code.</summary>
     public static Task<int> RunAsync(ProxyHostOptions options, CancellationToken ct)
@@ -206,11 +213,18 @@ internal sealed class ProxyRuntime(
     internal static readonly TimeSpan SummaryInterval = TimeSpan.FromMinutes(1);
     internal static readonly TimeSpan RepublishDelay = TimeSpan.FromSeconds(2);
     internal static readonly TimeSpan KeyRetryDelay = TimeSpan.FromMilliseconds(500);
-    // Stop budget: API 5 s + DNS-SD deregistration ~3 s + scanner, inside the 20 s host ShutdownTimeout.
+    // Stop budget: status pipe 2 s + API 5 s + DNS-SD deregistration ~3 s + scanner, inside the 20 s host ShutdownTimeout.
+    private static readonly TimeSpan PipeStopTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ApiStopTimeout = TimeSpan.FromSeconds(5);
 
     private readonly ILogger _log = loggers.CreateLogger("WindowsBtProxy");
     private long _advertisements;
+
+    /// <summary>
+    /// The advertisement count of the last full minute, for the status pipe; -1 until the first minute is over. Conceptually a
+    /// <c>long?</c>, but <see cref="Interlocked"/> only works on a plain <c>long</c>, so -1 stands for null (a count is never negative).
+    /// </summary>
+    private long _lastMinute = -1;
 
     public int ExitCode { get; private set; }
 
@@ -292,12 +306,13 @@ internal sealed class ProxyRuntime(
         _log.LogInformation("Starting {Name} ({Mode} scanner, port {Port}, mDNS {Mdns}, data in {Dir})", settings.Name,
             options.FakeScanner ? "fake" : settings.ScanMode.ToString().ToLowerInvariant(), port, options.NoMdns ? "off" : "on", options.Paths.Root);
 
-        // Whatever happens below, stop everything in the same order: API (no new clients, close the old ones), scanner, DNS-SD.
+        // Whatever happens below, stop everything in the same order: status pipe, API (no new clients, close the old ones), scanner, DNS-SD.
         using var running = CancellationTokenSource.CreateLinkedTokenSource(stopping);
         ScannerSupervisor? scanner = null;
         ApiServer? server = null;
         Task? api = null;
         Task? summary = null;
+        Task? statusPipe = null;
         MdnsPublisher? mdns = null;
         Action<RawAdvertisement> onAdvertisement = _ => Interlocked.Increment(ref _advertisements);
         try
@@ -306,6 +321,16 @@ internal sealed class ProxyRuntime(
             scanner.Received += onAdvertisement;
             await scanner.StartAsync(stopping).ConfigureAwait(false);
 
+            // Before the adapter wait, so the tray and the status command can tell that the proxy is waiting for one. The providers
+            // run on pipe threads at request time and read server and api as they are then (null until the API starts).
+            var statusScanner = scanner; // never reassigned; a copy the compiler knows is not null
+            var pipeServer = new StatusPipeServer(
+                options.PipeName,
+                () => Status(statusScanner, Volatile.Read(ref server), Volatile.Read(ref api), port, encryption),
+                () => KeyReplyFor(encryption),
+                loggers.CreateLogger("StatusPipe"));
+            statusPipe = ServeStatusAsync(pipeServer, running.Token);
+
             // Before the adapter wait, so a machine without Bluetooth keeps saying so once a minute.
             summary = SummaryLoopAsync(scanner, () => server?.Clients.Count ?? 0, running.Token);
 
@@ -313,11 +338,13 @@ internal sealed class ProxyRuntime(
                 Environment.MachineName, ProxyHost.CompilationTime());
             _log.LogInformation("Bluetooth adapter {Mac}, device name {Name}", identity.MacColon, identity.Name);
 
-            server = new ApiServer(new IPEndPoint(IPAddress.Any, port), identity, scanner, encryption, loggers.CreateLogger<ApiServer>(), time);
-            api = server.RunAsync(running.Token); // binds before its first await, so a busy port has already faulted the task
-            if (api.IsCompleted)
+            var apiServer = new ApiServer(new IPEndPoint(IPAddress.Any, port), identity, scanner, encryption, loggers.CreateLogger<ApiServer>(), time);
+            Volatile.Write(ref server, apiServer);
+            var apiTask = apiServer.RunAsync(running.Token); // binds before its first await, so a busy port has already faulted the task
+            Volatile.Write(ref api, apiTask); // published for the status pipe, which reads it from other threads
+            if (apiTask.IsCompleted)
             {
-                await ThrowStartFailureAsync(api, port).ConfigureAwait(false);
+                await ThrowStartFailureAsync(apiTask, port).ConfigureAwait(false);
             }
 
             if (!options.NoMdns)
@@ -328,15 +355,61 @@ internal sealed class ProxyRuntime(
 
             _log.LogInformation("Proxy is running");
 
-            await Task.WhenAny(api, summary).ConfigureAwait(false);
+            await Task.WhenAny(apiTask, summary).ConfigureAwait(false);
             if (!stopping.IsCancellationRequested)
             {
-                await ThrowStartFailureAsync(api, port).ConfigureAwait(false);
+                await ThrowStartFailureAsync(apiTask, port).ConfigureAwait(false);
             }
         }
         finally
         {
-            await ShutDownAsync(running, api, summary, scanner, mdns, onAdvertisement).ConfigureAwait(false);
+            await ShutDownAsync(running, statusPipe, api, summary, scanner, mdns, onAdvertisement).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The status pipe's answer: the proxy as it is right now.</summary>
+    private ProxyStatus Status(ScannerSupervisor scanner, ApiServer? server, Task? api, int port, EncryptionState encryption)
+    {
+        var lastMinute = Interlocked.Read(ref _lastMinute);
+        return StatusSnapshot.Build(
+            ProxyHost.Version,
+            settings,
+            port,
+            scanner.Status,
+            scanner.AdapterAddress,
+            apiRunning: server is not null && api is { IsCompleted: false },
+            lastMinute < 0 ? null : lastMinute,
+            encryption.HasKey,
+            server?.Clients ?? []);
+    }
+
+    /// <summary>The key as <c>key show</c> prints it (base64), or null when none is stored. Read once, so it cannot change halfway.</summary>
+    private static KeyReply KeyReplyFor(EncryptionState encryption)
+    {
+        var key = encryption.Key;
+        return new KeyReply(key.IsEmpty ? null : Convert.ToBase64String(key.Span));
+    }
+
+    /// <summary>
+    /// Serves the status pipe until <paramref name="ct"/> is cancelled. Never faults: without the pipe only the tray and the
+    /// <c>status</c> command go blind, which is no reason to stop proxying, so every failure is logged and swallowed here.
+    /// </summary>
+    private async Task ServeStatusAsync(StatusPipeServer pipe, CancellationToken ct)
+    {
+        try
+        {
+            if (!await pipe.RunAsync(ct).ConfigureAwait(false))
+            {
+                _log.LogWarning("The status pipe {Name} is already in use (another copy of the proxy running?); the tray and the status command will not see this one.", options.PipeName);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // stopping
+        }
+        catch (Exception e)
+        {
+            _log.LogError(e, "The status pipe {Name} stopped because of an unexpected error; the proxy keeps running, but the tray and the status command cannot reach it.", options.PipeName);
         }
     }
 
@@ -382,6 +455,7 @@ internal sealed class ProxyRuntime(
             while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
             {
                 var count = Interlocked.Exchange(ref _advertisements, 0);
+                Interlocked.Exchange(ref _lastMinute, count);
                 _log.LogInformation("{Count} advertisements in the last minute, {Clients} client(s), status {Status}", count, clientCount(), scanner.Status);
             }
         }
@@ -391,10 +465,24 @@ internal sealed class ProxyRuntime(
         }
     }
 
-    private async Task ShutDownAsync(CancellationTokenSource running, Task? api, Task? summary, ScannerSupervisor? scanner, MdnsPublisher? mdns, Action<RawAdvertisement> onAdvertisement)
+    private async Task ShutDownAsync(CancellationTokenSource running, Task? statusPipe, Task? api, Task? summary, ScannerSupervisor? scanner, MdnsPublisher? mdns, Action<RawAdvertisement> onAdvertisement)
     {
         _log.LogInformation("Stopping");
         await running.CancelAsync().ConfigureAwait(false);
+
+        // First, so nobody is told about a proxy that is going away. Each pipe connection ends within a second or two of the
+        // cancellation; ServeStatusAsync never faults, so a timeout leaves nothing unobserved behind.
+        if (statusPipe is not null)
+        {
+            try
+            {
+                await statusPipe.WaitAsync(PipeStopTimeout).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                _log.LogWarning("The status pipe did not close within {Seconds:0} s; continuing.", PipeStopTimeout.TotalSeconds);
+            }
+        }
 
         if (api is not null)
         {

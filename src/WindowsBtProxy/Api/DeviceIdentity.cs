@@ -16,13 +16,13 @@ public sealed record DeviceIdentity(string Name, string FriendlyName, ulong Blue
     public const string EsphomeVersion = "2026.10.0";
 
     /// <summary>Upper-case colon-separated address, e.g. <c>02:11:22:33:44:55</c>.</summary>
-    public string MacColon
+    public string MacColon => FormatMacColon(BluetoothAddress);
+
+    /// <summary>Formats the low 48 bits of <paramref name="address"/> as upper-case colon-separated hex (shared with the status pipe).</summary>
+    public static string FormatMacColon(ulong address)
     {
-        get
-        {
-            var hex = MacHex.ToUpperInvariant();
-            return $"{hex[0..2]}:{hex[2..4]}:{hex[4..6]}:{hex[6..8]}:{hex[8..10]}:{hex[10..12]}";
-        }
+        var hex = (address & 0xFFFFFFFFFFFF).ToString("X12");
+        return $"{hex[0..2]}:{hex[2..4]}:{hex[4..6]}:{hex[6..8]}:{hex[8..10]}:{hex[10..12]}";
     }
 
     /// <summary>Lower-case hex address without separators, 12 characters, e.g. <c>021122334455</c>.</summary>

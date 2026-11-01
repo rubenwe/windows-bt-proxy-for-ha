@@ -288,6 +288,8 @@ public sealed class InstallerTests : IDisposable
 
         public void StartDetached(string exe, string args)
             => new ProcessRunner().RunAsync(exe, args, CancellationToken.None).GetAwaiter().GetResult();
+
+        public void StartShell(string exe, string args) => fake.StartShell(exe, args);
     }
 
     [Fact]
@@ -568,6 +570,56 @@ public sealed class InstallerTests : IDisposable
 
         Assert.Equal(["Delete"], _runKey.Calls);
         Assert.Null(_runKey.Value);
+    }
+
+    public static TheoryData<Exception> RefusedRegistryChanges => new()
+    {
+        new UnauthorizedAccessException("Access to the registry key is denied."),
+        new System.Security.SecurityException("Requested registry access is not allowed."),
+        new IOException("The device is not ready."),
+    };
+
+    [Theory]
+    [MemberData(nameof(RefusedRegistryChanges))]
+    public async Task Upgrade_still_starts_the_service_when_the_run_value_cannot_be_written(Exception refusal)
+    {
+        SeedInstall();
+        _runKey.ThrowOnChange = refusal;
+
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
+
+        Assert.Contains("sc.exe start WindowsBtProxyForHA", _runner.Commands);
+        Assert.Contains(
+            $@"warning: Could not add the tray icon's autostart entry (value WindowsBtProxyForHA under HKLM\Software\Microsoft\Windows\CurrentVersion\Run), so the tray icon will not start at sign-in. The service is not affected. ({refusal.Message})",
+            _output.ToString());
+    }
+
+    [Theory]
+    [MemberData(nameof(RefusedRegistryChanges))]
+    public async Task Install_with_no_tray_still_starts_the_service_when_the_run_value_cannot_be_deleted(Exception refusal)
+    {
+        SeedInstall();
+        _runKey.ThrowOnChange = refusal;
+
+        await NewInstaller().InstallAsync(tray: false, CancellationToken.None);
+
+        Assert.Contains("sc.exe start WindowsBtProxyForHA", _runner.Commands);
+        Assert.Contains(@"warning: Could not remove the tray icon's autostart entry: delete the value WindowsBtProxyForHA under HKLM\Software\Microsoft\Windows\CurrentVersion\Run yourself", _output.ToString());
+    }
+
+    [Theory]
+    [MemberData(nameof(RefusedRegistryChanges))]
+    public async Task Uninstall_still_removes_the_firewall_rule_and_folder_when_the_run_value_cannot_be_deleted(Exception refusal)
+    {
+        SeedInstall(port: 7000);
+        _runKey.ThrowOnChange = refusal;
+
+        await NewInstaller().UninstallAsync(keepSettings: false, CancellationToken.None);
+
+        Assert.Contains("netsh.exe advfirewall firewall delete rule name=\"Windows BT Proxy for Home Assistant (TCP 7000)\"", _runner.Commands);
+        Assert.False(Directory.Exists(_box.ProgramDir));
+        Assert.False(Directory.Exists(_box.Data.Root));
+        Assert.Contains(@"warning: Could not remove the tray icon's autostart entry: delete the value WindowsBtProxyForHA under HKLM\Software\Microsoft\Windows\CurrentVersion\Run yourself", _output.ToString());
     }
 
     [Fact]

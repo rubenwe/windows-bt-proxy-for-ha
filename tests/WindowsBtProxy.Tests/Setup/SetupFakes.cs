@@ -11,6 +11,12 @@ internal sealed class FakeProcessRunner : IProcessRunner
 
     public List<string> Detached { get; } = [];
 
+    /// <summary>What went through <see cref="StartShell"/>: the tray, which must inherit nothing from install.</summary>
+    public List<string> ShellStarts { get; } = [];
+
+    /// <summary>Thrown by <see cref="StartShell"/> (after recording the call), to simulate a tray that cannot be started.</summary>
+    public Exception? ThrowOnShellStart { get; set; }
+
     public Func<string, int>? Handler { get; set; }
 
     public Func<string, string>? OutputHandler { get; set; }
@@ -29,6 +35,15 @@ internal sealed class FakeProcessRunner : IProcessRunner
     }
 
     public void StartDetached(string exe, string args) => Detached.Add($"{exe} {args}");
+
+    public void StartShell(string exe, string args)
+    {
+        ShellStarts.Add($"{exe} {args}");
+        if (ThrowOnShellStart is not null)
+        {
+            throw ThrowOnShellStart;
+        }
+    }
 
     public int IndexOf(string prefix) => Commands.FindIndex(c => c.StartsWith(prefix, StringComparison.Ordinal));
 
@@ -56,26 +71,46 @@ internal sealed class FakeRunKey : IRunKey
 {
     public string? Value { get; set; }
 
+    /// <summary>Thrown by <see cref="Write"/> and <see cref="Delete"/> (after recording the call), like security software or Group Policy refusing the change.</summary>
+    public Exception? ThrowOnChange { get; set; }
+
     public List<string> Calls { get; } = [];
 
     public Action<string>? OnCall { get; set; }
 
+    /// <summary>Thrown by <see cref="Read"/> (after recording the call), like a key the caller may not open.</summary>
+    public Exception? ThrowOnRead { get; set; }
+
     public string? Read()
     {
         Record("Read");
+        if (ThrowOnRead is not null)
+        {
+            throw ThrowOnRead;
+        }
         return Value;
     }
 
     public void Write(string commandLine)
     {
         Record($"Write {commandLine}");
+        ThrowIfRefused();
         Value = commandLine;
     }
 
     public void Delete()
     {
         Record("Delete");
+        ThrowIfRefused();
         Value = null;
+    }
+
+    private void ThrowIfRefused()
+    {
+        if (ThrowOnChange is not null)
+        {
+            throw ThrowOnChange;
+        }
     }
 
     private void Record(string call)

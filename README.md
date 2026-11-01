@@ -13,28 +13,38 @@ It ships as a single Native AOT executable, `windows-bt-proxy.exe`. No .NET runt
 
 ## Install
 
-1. Download the release zip for your architecture (x64 or ARM64) and unpack it.
-2. Open an **administrator** terminal and run:
+Release downloads are planned but do not exist yet. Until then, [build from source](#build-from-source) (x64 or ARM64) and use the `windows-bt-proxy.exe` it produces.
 
-   ```
-   windows-bt-proxy.exe install
-   ```
+Open an **administrator** terminal in the folder with the exe and run:
 
-   The build is unsigned, so SmartScreen may warn on first run: click **More info**, then **Run anyway**.
+```
+windows-bt-proxy.exe install
+```
+
+The build is unsigned, so SmartScreen may warn on first run: click **More info**, then **Run anyway**.
 
 `install` copies the exe to `%ProgramFiles%\WindowsBtProxyForHA\`, registers the Windows service `WindowsBtProxyForHA` (starts automatically, restarts on failure), adds a firewall rule for TCP 6053 on Private and Domain networks, and creates default settings.
 
 ## Add it to Home Assistant
 
-The proxy should appear under **Settings → Devices & services → Discovered**. Click **Add**.
+The proxy may appear under **Settings → Devices & services → Discovered** (mDNS discovery depends on your network). Click **Add**.
 
-If it does not show up: **Add integration → ESPHome**, enter the PC's IP address as host and `6053` as port.
+The reliable way: **Add integration → ESPHome**, enter the PC's IP address as host and `6053` as port.
 
-You don't need a key. Home Assistant provisions an encryption key automatically on first connect, and from then on the proxy accepts only encrypted connections.
+You don't need a key. Home Assistant 2026.8 or newer provisions an encryption key automatically on first connect ([it sends the key over an encrypted zero-PSK session](https://github.com/home-assistant/core/pull/176144), merged 2026-07-15), and from then on the proxy accepts only encrypted connections. With an older Home Assistant the proxy stays unencrypted (`key show` then prints "no key"); run `key rotate` to force encryption, and Home Assistant then asks you for the key.
+
+Until Home Assistant has adopted the proxy it has no key, and any device on your LAN could provision one first. That is inherent to ESPHome's zero-PSK provisioning. If it happens, run `key clear` and add the proxy again.
 
 ## Settings
 
-`%ProgramData%\WindowsBtProxyForHA\settings.json`. Restart the service to apply changes.
+`%ProgramData%\WindowsBtProxyForHA\settings.json`. Only administrators can write it: edit it from an elevated editor. Apply changes by restarting the service in an elevated terminal:
+
+```
+net stop WindowsBtProxyForHA
+net start WindowsBtProxyForHA
+```
+
+After changing `port`, run `install` again so the firewall rule follows.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -49,12 +59,12 @@ You don't need a key. Home Assistant provisions an encryption key automatically 
 
 ## Encryption key
 
-Run these in an administrator terminal:
+All key commands, including `key show`, need an administrator terminal:
 
 ```
-windows-bt-proxy.exe key show     # print the current key
-windows-bt-proxy.exe key rotate   # new key; Home Assistant will ask for it
-windows-bt-proxy.exe key clear    # forget the key; Home Assistant provisions a new one
+windows-bt-proxy.exe key show     # print the current key ("no key" if Home Assistant has not provisioned one)
+windows-bt-proxy.exe key rotate   # new key, encryption forced; Home Assistant will ask for it
+windows-bt-proxy.exe key clear    # forget the key; Home Assistant asks you to confirm, then provisions a new one
 ```
 
 ## Uninstall

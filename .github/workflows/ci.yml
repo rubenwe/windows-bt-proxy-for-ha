@@ -1,7 +1,11 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
+    branches: [main] # pull_request covers every other branch
   pull_request:
   schedule:
     # Weekly: catches aioesphomeapi / Home Assistant protocol drift.
@@ -31,13 +35,17 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows-bt-proxy-win-x64
-          path: src/WindowsBtProxy/bin/Release/net11.0-windows10.0.26100.0/win-x64/publish/
+          path: |
+            src/WindowsBtProxy/bin/Release/net11.0-windows10.0.26100.0/win-x64/publish/
+            !**/*.pdb
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-bt-proxy-win-arm64
-          path: src/WindowsBtProxy/bin/Release/net11.0-windows10.0.26100.0/win-arm64/publish/
+          path: |
+            src/WindowsBtProxy/bin/Release/net11.0-windows10.0.26100.0/win-arm64/publish/
+            !**/*.pdb
           if-no-files-found: error
 
       - uses: actions/setup-python@v5

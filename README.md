@@ -13,7 +13,7 @@ It ships as a single Native AOT executable, `windows-bt-proxy.exe`. No .NET runt
 
 ## Install
 
-Release downloads are planned but do not exist yet. Until then, [build from source](#build-from-source) (x64 or ARM64) and use the `windows-bt-proxy.exe` it produces.
+Download the zip for your PC from [Releases](https://github.com/rubenwe/windows-bt-proxy-for-ha/releases/latest) (`win-x64` for Intel/AMD, `win-arm64` for ARM) and unzip it, or [build from source](#build-from-source). `SHA256SUMS.txt` in the release lets you check the download with `Get-FileHash`.
 
 Open an **administrator** terminal in the folder with the exe and run:
 
@@ -95,6 +95,10 @@ dotnet publish src/WindowsBtProxy -c Release -r win-x64
 ```
 
 Use `-r win-arm64` for ARM64.
+
+## Releasing
+
+Set `<Version>` in `src/WindowsBtProxy/WindowsBtProxy.csproj`, merge to `main`, then push a matching tag (`git tag -a v0.2.0 -m 0.2.0 && git push origin v0.2.0`). The [Release workflow](.github/workflows/release.yml) checks the tag against the version, runs all tests, builds both architectures and publishes the GitHub release with the zips and `SHA256SUMS.txt`. A tag with a suffix (`v0.2.0-rc.1`) becomes a pre-release.
 
 ## License
 

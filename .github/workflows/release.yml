@@ -1,0 +1,91 @@
+name: Release
+
+# Push a tag like v0.1.0 on main. The tag must match <Version> in src/WindowsBtProxy/WindowsBtProxy.csproj;
+# a tag with a suffix (v0.2.0-rc.1) becomes a pre-release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # create the release and upload its files
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Check the tag matches the project version
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          $declared = ([xml](Get-Content src/WindowsBtProxy/WindowsBtProxy.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          if ($version -ne $declared) { throw "Tag $env:TAG does not match <Version>$declared</Version> in the csproj." }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Test
+        run: dotnet test -c Release
+
+      # Native AOT; Directory.Build.props sets TreatWarningsAsErrors, so any warning fails the build.
+      - name: Publish win-x64
+        run: dotnet publish src/WindowsBtProxy -c Release -r win-x64
+
+      - name: Publish win-arm64
+        run: dotnet publish src/WindowsBtProxy -c Release -r win-arm64
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install interop test dependencies
+        run: pip install -r tests/interop/requirements.txt
+
+      - name: Interop tests (aioesphomeapi)
+        run: pytest tests/interop -q
+
+      - name: Check the exe reports the release version
+        run: |
+          $reported = & src/WindowsBtProxy/bin/Release/net11.0-windows10.0.26100.0/win-x64/publish/windows-bt-proxy.exe version
+          if (-not "$reported".StartsWith($env:VERSION)) { throw "windows-bt-proxy.exe reports '$reported', expected $env:VERSION." }
+
+      - name: Package
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          foreach ($rid in 'win-x64', 'win-arm64') {
+            $stage = "stage/$rid"
+            New-Item -ItemType Directory $stage -Force | Out-Null
+            Copy-Item "src/WindowsBtProxy/bin/Release/net11.0-windows10.0.26100.0/$rid/publish/windows-bt-proxy.exe" $stage
+            Copy-Item LICENSE "$stage/LICENSE.txt"
+            Compress-Archive -Path "$stage/*" -DestinationPath "dist/windows-bt-proxy-$env:VERSION-$rid.zip"
+          }
+          Get-ChildItem dist/*.zip | ForEach-Object {
+            "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
+          } | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          Unsigned build: Windows SmartScreen may warn on first run (**More info**, then **Run anyway**).
+
+          **Install:** download the zip for your PC (``win-x64`` for Intel/AMD, ``win-arm64`` for ARM), unzip, then in an
+          administrator terminal run ``windows-bt-proxy.exe install``. Home Assistant 2026.8 or newer adopts it and provisions
+          the encryption key by itself. Details in the [README](https://github.com/${{ github.repository }}#readme).
+
+          Check a download with ``Get-FileHash <zip>`` against ``SHA256SUMS.txt``.
+          "@
+          $files = @(Get-ChildItem dist/*.zip | ForEach-Object FullName) + (Resolve-Path dist/SHA256SUMS.txt).Path
+          $flags = @('--verify-tag', '--title', $env:VERSION, '--notes', $notes, '--generate-notes')
+          if ($env:VERSION.Contains('-')) { $flags += '--prerelease' }
+          gh release create $env:TAG @files @flags
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed ($LASTEXITCODE)." }

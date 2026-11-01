@@ -15,9 +15,9 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -32,7 +32,7 @@ jobs:
         run: dotnet publish src/WindowsBtProxy -c Release -r win-arm64
 
       # Upload before the interop tests so a failing interop run still leaves the binaries to inspect.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-bt-proxy-win-x64
           path: |
@@ -40,7 +40,7 @@ jobs:
             !**/*.pdb
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-bt-proxy-win-arm64
           path: |
@@ -48,7 +48,7 @@ jobs:
             !**/*.pdb
           if-no-files-found: error
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 

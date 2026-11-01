@@ -11,6 +11,8 @@
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <!-- dnsapi.dll interop (Discovery/DnsSdAdvertiser.cs) uses pointers and function pointers. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- consoleAllocationPolicy=detached (Windows 11 24H2+): no console window unless ConsoleAttach asks for one. See docs/decisions.md. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>

@@ -75,7 +75,14 @@ public static class CommandLine
             error = "--no-key-acl is only allowed with a non-default --data-dir";
             return false;
         }
-        options = new ProxyHostOptions(paths, asService, fakeScanner, noMdns, port, protectKeyFile);
+        if (fakeScanner && (dataDir is null || SamePath(paths.Root, DataPaths.Default.Root)))
+        {
+            // The fake scanner would make the real settings, key and logs belong to a proxy that sends invented advertisements.
+            error = "--fake-scanner is only allowed with a non-default --data-dir";
+            return false;
+        }
+        // A fake proxy must never announce itself to the network (and so to Home Assistant).
+        options = new ProxyHostOptions(paths, asService, fakeScanner, noMdns || fakeScanner, port, protectKeyFile);
         return true;
     }
 

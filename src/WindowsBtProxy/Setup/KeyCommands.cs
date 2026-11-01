@@ -42,7 +42,7 @@ public sealed class KeyCommands(SetupContext context)
 
         if (key is null)
         {
-            context.Out.WriteLine("no key — HA will provision one when you add the proxy");
+            context.Out.WriteLine("no key - HA will provision one when you add the proxy");
             return 0;
         }
         try

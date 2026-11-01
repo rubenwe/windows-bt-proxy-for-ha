@@ -54,6 +54,29 @@ public sealed class CommandLineTests
         Assert.Equal("--no-key-acl is only allowed with a non-default --data-dir", error);
     }
 
+    [Fact]
+    public void Fake_scanner_implies_no_mdns()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "wbp-data");
+        Assert.True(CommandLine.TryParseHostOptions(["--fake-scanner", "--data-dir", dir], asService: false, out var options, out _));
+        Assert.True(options!.FakeScanner);
+        Assert.True(options.NoMdns);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Fake_scanner_needs_a_non_default_data_dir(bool explicitDefault)
+    {
+        string[] args = explicitDefault
+            ? ["--fake-scanner", "--data-dir", DataPaths.Default.Root + Path.DirectorySeparatorChar]
+            : ["--fake-scanner"];
+
+        Assert.False(CommandLine.TryParseHostOptions(args, asService: false, out var options, out var error));
+        Assert.Null(options);
+        Assert.Equal("--fake-scanner is only allowed with a non-default --data-dir", error);
+    }
+
     [Theory]
     [InlineData("--port")]
     [InlineData("--port", "abc")]

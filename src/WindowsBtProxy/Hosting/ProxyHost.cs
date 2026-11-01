@@ -31,7 +31,9 @@ public static class ExitCodes
     public const int Ok = 0;
     public const int Failed = 1;
 
-    /// <summary>noise.key exists but cannot be used. The API was never started.</summary>
+    /// <summary>
+    /// noise.key exists but cannot be used, or (as a service) the data folder cannot be protected or trusted. The API was never started.
+    /// </summary>
     public const int CorruptKey = 2;
 
     public const int PortInUse = 3;
@@ -53,15 +55,32 @@ public static class ProxyHost
     internal static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(20);
 
     /// <summary>Returns when the host has stopped (Ctrl+C, service stop, <paramref name="ct"/> cancelled, or a fatal error): the process exit code.</summary>
-    public static async Task<int> RunAsync(ProxyHostOptions options, CancellationToken ct)
+    public static Task<int> RunAsync(ProxyHostOptions options, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        // As a service the data folder is protected (and checked) before anything is read from or written into it.
+        return RunAsync(options, ct, options.AsService ? DataDirProtector.System : null);
+    }
+
+    /// <param name="protector">Applied to the data folder before the settings, the log or the key are touched; null leaves the folder alone (<c>run</c>).</param>
+    internal static async Task<int> RunAsync(ProxyHostOptions options, CancellationToken ct, DataDirProtector? protector)
     {
         ArgumentNullException.ThrowIfNull(options);
 
+        // Fails closed: when the folder cannot be trusted nothing is read from it and nothing is written to it (not even a log line,
+        // and a planted link must not redirect one), the Event Log gets the error, and the runtime stops with exit code 2.
+        var startupFailure = protector is null ? null : protector.TryProtect(options.Paths.Root);
+
         // The log level lives in settings.json, so the settings are read before the real loggers exist.
         ProxySettings settings;
-        using (var bootstrap = LoggerFactory.Create(logging => ConfigureLogging(logging, options, LogLevel.Information)))
+        if (startupFailure is null)
         {
+            using var bootstrap = LoggerFactory.Create(logging => ConfigureLogging(logging, options, LogLevel.Information));
             settings = SettingsStore.LoadOrCreate(options.Paths, Environment.MachineName, bootstrap.CreateLogger("Settings"));
+        }
+        else
+        {
+            settings = SettingsStore.Defaults(Environment.MachineName);
         }
 
         var builder = Host.CreateEmptyApplicationBuilder(new HostApplicationBuilderSettings
@@ -70,7 +89,7 @@ public static class ProxyHost
             ContentRootPath = AppContext.BaseDirectory,
         });
         var level = RollingFileLogger.ParseLevel(settings.LogLevel);
-        ConfigureLogging(builder.Logging, options, level);
+        ConfigureLogging(builder.Logging, options, level, toFile: startupFailure is null);
         builder.Services.Configure<HostOptions>(o =>
         {
             o.ShutdownTimeout = ShutdownTimeout;
@@ -84,6 +103,7 @@ public static class ProxyHost
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(settings);
+        builder.Services.AddSingleton(new StartupFailure(startupFailure));
         builder.Services.AddSingleton<ProxyRuntime>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyRuntime>());
 
@@ -93,11 +113,14 @@ public static class ProxyHost
         return runtime.ExitCode;
     }
 
-    internal static void ConfigureLogging(ILoggingBuilder logging, ProxyHostOptions options, LogLevel level)
+    internal static void ConfigureLogging(ILoggingBuilder logging, ProxyHostOptions options, LogLevel level, bool toFile = true)
     {
         logging.ClearProviders();
         logging.SetMinimumLevel(level);
-        logging.AddProvider(new RollingFileLogger(options.Paths.LogDir, level));
+        if (toFile)
+        {
+            logging.AddProvider(new RollingFileLogger(options.Paths.LogDir, level));
+        }
         if (options.AsService)
         {
             logging.AddEventLog(settings => settings.SourceName = Installer.ServiceName);
@@ -167,6 +190,9 @@ public static class ProxyHost
     }
 }
 
+/// <summary>An error found before the host was built (the data folder cannot be trusted); <see cref="ProxyRuntime"/> reports it and stops.</summary>
+internal sealed record StartupFailure(HostFatalException? Error);
+
 /// <summary>The hosted service: owns the scanner, the API server and DNS-SD from start until the host stops.</summary>
 internal sealed class ProxyRuntime(
     ProxyHostOptions options,
@@ -174,6 +200,7 @@ internal sealed class ProxyRuntime(
     ILoggerFactory loggers,
     IHostApplicationLifetime lifetime,
     IHostLifetime hostLifetime,
+    StartupFailure startupFailure,
     TimeProvider time) : BackgroundService
 {
     internal static readonly TimeSpan SummaryInterval = TimeSpan.FromMinutes(1);
@@ -226,21 +253,32 @@ internal sealed class ProxyRuntime(
     }
 
     /// <summary>
-    /// Makes a fatal exit visible outside the process. The process exit code comes from Program; the service control manager only
-    /// looks at the service's own exit code (<c>ServiceBase.ExitCode</c>, reported when the service stops), which
-    /// WindowsServiceLifetime never sets. A non-zero value there is what triggers the service's failure actions (<c>sc failureflag</c>).
+    /// Makes a fatal exit visible outside the process. <see cref="Environment.ExitCode"/> (the process exit code) always gets
+    /// <paramref name="code"/>. The service control manager only looks at the service's own exit code (<c>ServiceBase.ExitCode</c>,
+    /// reported when the service stops), which WindowsServiceLifetime never sets; a non-zero value there triggers the service's
+    /// failure actions (<c>sc failureflag</c>). Only the transient failures (1 unexpected error, 3 port in use) are reported to
+    /// the SCM, so they are retried: the last failure action repeats for every later failure, so reporting the permanent ones
+    /// (2 corrupt key or untrusted data folder, 4 no crypto) would restart the service every 30 s forever. Those are logged
+    /// as errors and the SCM is told 0, so the service just stays stopped until someone fixes it.
     /// </summary>
+    internal static int ScmExitCodeFor(int code) => code is ExitCodes.Failed or ExitCodes.PortInUse ? code : ExitCodes.Ok;
+
     private void ReportExitCode(int code)
     {
         Environment.ExitCode = code;
         if (hostLifetime is ServiceBase service)
         {
-            service.ExitCode = code;
+            service.ExitCode = ScmExitCodeFor(code);
         }
     }
 
     private async Task RunAsync(CancellationToken stopping)
     {
+        if (startupFailure.Error is { } failure)
+        {
+            throw failure;
+        }
+
         if (ProxyHost.CryptoProblem(ChaCha20Poly1305.IsSupported, X25519DiffieHellman.IsSupported) is { } problem)
         {
             throw new HostFatalException(ExitCodes.CryptoUnsupported, problem);
@@ -403,7 +441,8 @@ internal sealed class ProxyRuntime(
 
     /// <summary>
     /// DNS-SD registration that follows the network: re-published (after a short pause, off the event thread) when an address
-    /// changes and when a key is provisioned (the TXT records switch from "provisioning" to "encrypted").
+    /// changes and when a key is provisioned (the TXT records switch from "provisioning" to "encrypted"), but only if what would be
+    /// announced differs from the last publish (see <see cref="RepublishFilter"/>).
     /// </summary>
     private sealed class MdnsPublisher : IAsyncDisposable
     {
@@ -415,6 +454,7 @@ internal sealed class ProxyRuntime(
         private readonly DnsSdAdvertiser _advertiser;
         private readonly Debouncer _republish;
         private readonly Action _trigger;
+        private readonly RepublishFilter _filter = new();
         private readonly NetworkAddressChangedEventHandler _onAddressChanged;
 
         public MdnsPublisher(DeviceIdentity identity, ushort port, EncryptionState encryption, ProxySettings settings, ILogger log, TimeProvider time)
@@ -444,7 +484,11 @@ internal sealed class ProxyRuntime(
             try
             {
                 var interfaces = InterfaceSelector.Select(NetInterface.FromSystem(), _settings.Interfaces);
-                _advertiser.Publish(_identity, _port, _encryption.HasKey, interfaces);
+                var hasKey = _encryption.HasKey;
+                if (!_filter.TryPublish(interfaces, hasKey, () => _advertiser.Publish(_identity, _port, hasKey, interfaces)))
+                {
+                    _log.LogDebug("DNS-SD: nothing changed, not re-published");
+                }
             }
             catch (ObjectDisposedException)
             {

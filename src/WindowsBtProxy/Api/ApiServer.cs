@@ -16,6 +16,8 @@ public sealed record ClientInfo(IPEndPoint Remote, string ClientInfoText, bool S
 /// <c>source</c> out to every subscribed client. It does not start the source; the host does.
 /// Encryption policy (<see cref="TransportNegotiator"/>): plaintext and zero-PSK Noise only while <c>encryption</c> has no key;
 /// when a client provisions one, every plaintext and zero-PSK session is closed and only keyed Noise is served from then on.
+/// At most <see cref="MaxConnections"/> connections are open at once, counting those still negotiating (pre-authentication, so a
+/// flood of idle sockets cannot exhaust the process); further sockets are closed as soon as they are accepted.
 /// </summary>
 public sealed class ApiServer(
     IPEndPoint endpoint,
@@ -25,7 +27,11 @@ public sealed class ApiServer(
     ILogger<ApiServer> log,
     TimeProvider time)
 {
+    /// <summary>Home Assistant opens one connection per proxy; the rest is headroom for reconnects and diagnostics.</summary>
+    internal const int MaxConnections = 8;
+
     private readonly ConcurrentDictionary<ApiConnection, byte> _connections = new();
+    private int _open; // accepted and not yet finished, including connections still negotiating
     private volatile IPEndPoint? _localEndpoint;
 
     /// <summary>The bound address (useful with port 0). Valid as soon as <see cref="RunAsync"/> has been called.</summary>
@@ -67,6 +73,13 @@ public sealed class ApiServer(
                     continue;
                 }
 
+                if (Interlocked.Increment(ref _open) > MaxConnections)
+                {
+                    Interlocked.Decrement(ref _open);
+                    RefuseOverCap(client);
+                    continue;
+                }
+
                 var task = ServeAsync(client, ct);
                 serving.TryAdd(task, 0);
                 _ = task.ContinueWith(t => serving.TryRemove(t, out _), TaskScheduler.Default);
@@ -86,6 +99,19 @@ public sealed class ApiServer(
             }
             await Task.WhenAll(serving.Keys).ConfigureAwait(false);
         }
+    }
+
+    private void RefuseOverCap(TcpClient client)
+    {
+        try
+        {
+            log.LogDebug("Refusing {Remote}: {Max} connections are already open", client.Client.RemoteEndPoint, MaxConnections);
+        }
+        catch (Exception e) when (e is SocketException or ObjectDisposedException)
+        {
+            // already gone
+        }
+        client.Dispose();
     }
 
     private void OnAdvertisement(RawAdvertisement ad)
@@ -125,7 +151,7 @@ public sealed class ApiServer(
             EnableKeepAlive(client.Client, remote);
             connection = new ApiConnection(client, remote, identity, encryption, log, time, HandshakeTimeout, RaiseClientsChanged, CloseOtherUnkeyedSessions);
             _connections[connection] = 0;
-            log.LogInformation("Client {Remote} connected", remote);
+            log.LogDebug("Client {Remote} connected", remote);
             RaiseClientsChanged();
             await connection.RunAsync(ct).ConfigureAwait(false);
         }
@@ -151,7 +177,8 @@ public sealed class ApiServer(
             {
                 client.Dispose();
             }
-            log.LogInformation("Client {Remote} disconnected", remote);
+            log.LogDebug("Client {Remote} disconnected", remote);
+            Interlocked.Decrement(ref _open);
             RaiseClientsChanged();
         }
     }

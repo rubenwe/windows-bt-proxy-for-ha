@@ -234,7 +234,7 @@ public sealed class SetupCommandsTests : IDisposable
         var code = await Run(["key", "show"]);
 
         Assert.Equal(0, code);
-        Assert.Contains("no key — HA will provision one when you add the proxy", _output.ToString());
+        Assert.Contains("no key - HA will provision one when you add the proxy", _output.ToString());
     }
 
     [Fact]

@@ -14,7 +14,7 @@ public static class TxtRecords
         var records = new Dictionary<string, string>
         {
             ["friendly_name"] = id.FriendlyName,
-            ["version"] = "2025.6.0",
+            ["version"] = DeviceIdentity.EsphomeVersion,
             ["mac"] = id.MacHex,
             ["platform"] = "Windows",
             ["board"] = "windows",

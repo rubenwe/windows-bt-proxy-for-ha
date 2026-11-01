@@ -22,7 +22,6 @@ internal sealed class ApiConnection : IAsyncDisposable
 {
     internal const uint ApiVersionMajor = 1;
     internal const uint ApiVersionMinor = 13;
-    internal const string EsphomeVersion = "2025.6.0";
     internal const string Manufacturer = "Windows";
     internal const uint BluetoothProxyFeatureFlags = 33; // PASSIVE_SCAN (1) | RAW_ADVERTISEMENTS (32)
 
@@ -237,7 +236,7 @@ internal sealed class ApiConnection : IAsyncDisposable
                     FriendlyName = _identity.FriendlyName,
                     MacAddress = _identity.MacColon,
                     BluetoothMacAddress = _identity.MacColon,
-                    EsphomeVersion = EsphomeVersion,
+                    EsphomeVersion = DeviceIdentity.EsphomeVersion,
                     CompilationTime = _identity.CompilationTime,
                     Manufacturer = Manufacturer,
                     Model = _identity.Model,

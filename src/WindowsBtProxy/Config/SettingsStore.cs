@@ -61,7 +61,7 @@ public static class SettingsStore
         return Normalize(parsed, defaults, log);
     }
 
-    private static ProxySettings Defaults(string machineName) => new(NameSanitizer.DefaultName(machineName), NameSanitizer.DefaultFriendlyName(machineName));
+    internal static ProxySettings Defaults(string machineName) => new(NameSanitizer.DefaultName(machineName), NameSanitizer.DefaultFriendlyName(machineName));
 
     /// <summary>Fills in what the file left out and repairs values the service cannot use, warning about each repair.</summary>
     private static ProxySettings Normalize(ProxySettings loaded, ProxySettings defaults, ILogger log)

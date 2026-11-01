@@ -21,7 +21,7 @@ public class ApiServerTests
         Assert.Equal(1u, hello.ApiVersionMajor);
         Assert.Equal(13u, hello.ApiVersionMinor);
         Assert.Equal("windows-bt-proxy-334455", hello.Name);
-        Assert.StartsWith("windows-bt-proxy ", hello.ServerInfo);
+        Assert.StartsWith("windows-bt-proxy 0.1.0", hello.ServerInfo);
         Assert.True(hello.ServerInfo.Length > "windows-bt-proxy ".Length);
     }
 
@@ -232,6 +232,57 @@ public class ApiServerTests
         Assert.NotEmpty(await good.ReceiveBatchesAsync(minAds: 3));
         await good.SendAsync(new PingRequest());
         await good.ReceiveUntilAsync<PingResponse>();
+    }
+
+    [Fact]
+    public async Task At_most_eight_connections_are_served_including_ones_that_never_authenticate()
+    {
+        await using var h = await Harness.StartAsync();
+        var idle = new List<TestClient>();
+        try
+        {
+            for (var i = 0; i < ApiServer.MaxConnections; i++)
+            {
+                idle.Add(h.Connect()); // connected, never sends a byte: still negotiating
+            }
+            await TestClient.WaitUntilAsync(() => h.Server.Clients.Count == ApiServer.MaxConnections);
+
+            await using var excess = h.Connect();
+            await excess.WaitUntilClosedAsync(); // closed straight after accept
+            Assert.Equal(ApiServer.MaxConnections, h.Server.Clients.Count);
+            Assert.Contains(h.Log.Lines, l => l.StartsWith("Debug: Refusing ", StringComparison.Ordinal));
+            Assert.DoesNotContain(h.Log.Lines, l => l.Contains("Refusing", StringComparison.Ordinal) && !l.StartsWith("Debug:", StringComparison.Ordinal));
+
+            // A freed slot is usable again.
+            await idle[0].DisposeAsync();
+            await TestClient.WaitUntilAsync(() => h.Server.Clients.Count == ApiServer.MaxConnections - 1);
+            await using var replacement = h.Connect();
+            Assert.Equal(1u, (await replacement.HelloAsync()).ApiVersionMajor);
+        }
+        finally
+        {
+            foreach (var c in idle)
+            {
+                await c.DisposeAsync();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Connecting_and_disconnecting_is_logged_at_debug_and_the_hello_at_info()
+    {
+        await using var h = await Harness.StartAsync();
+        await using (var c = h.Connect())
+        {
+            await c.HelloAsync();
+        }
+        await TestClient.WaitUntilAsync(() => h.Server.Clients.Count == 0);
+        await TestClient.WaitUntilAsync(() => h.Log.Lines.Any(l => l.Contains("disconnected", StringComparison.Ordinal)));
+
+        Assert.Contains(h.Log.Lines, l => l.StartsWith("Debug: Client ", StringComparison.Ordinal) && l.EndsWith(" connected", StringComparison.Ordinal));
+        Assert.Contains(h.Log.Lines, l => l.StartsWith("Debug: Client ", StringComparison.Ordinal) && l.EndsWith(" disconnected", StringComparison.Ordinal));
+        Assert.Contains(h.Log.Lines, l => l.StartsWith("Information: Client ", StringComparison.Ordinal) && l.Contains(" says hello: ", StringComparison.Ordinal));
+        Assert.Single(h.Log.Lines, l => l.StartsWith("Information: Client ", StringComparison.Ordinal));
     }
 
     [Fact]

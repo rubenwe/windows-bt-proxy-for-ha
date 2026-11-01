@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -24,7 +23,7 @@ internal sealed unsafe class Win32NotifyIcon(nint hwnd, Guid guid, uint callback
             if (!Native.Shell_NotifyIconW(Native.NIM_ADD, data))
             {
                 // No taskbar yet, or Explorer too busy: TrayController tries again with the next answer.
-                Debug.WriteLine("tray: Shell_NotifyIcon(NIM_ADD) failed");
+                DebugOutput.Write("tray: Shell_NotifyIcon(NIM_ADD) failed");
                 return false;
             }
         }

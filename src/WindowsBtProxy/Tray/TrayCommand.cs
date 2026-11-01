@@ -284,16 +284,17 @@ internal static class TrayCommand
         }
     }
 
+    /// <summary>The same start as install's, and the Run value's: ShellExecute, in the system folder, so this tray's folder is not inherited.</summary>
     private static void StartInstalledTray()
     {
         try
         {
-            using var _ = Process.Start(new ProcessStartInfo(InstallPaths.Default().ExePath, "tray") { UseShellExecute = true });
+            ProcessRunner.StartShellDetached(InstallPaths.Default().ExePath, "tray");
         }
         catch (Win32Exception e)
         {
             // Nothing to show it in; the Run value starts the new tray at the next sign-in.
-            Debug.WriteLine($"tray: could not start the installed tray: {e.Message}");
+            DebugOutput.Write($"tray: could not start the installed tray: {e.Message}");
         }
     }
 }

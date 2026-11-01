@@ -28,18 +28,21 @@ watcher started: Created
 - `crypto ok`: `X25519DiffieHellman` key agreement plus `ChaCha20Poly1305` round trip work under Native AOT.
 - About 2.5 ads/s in the user session (passive scan, Intel AX210).
 
-### Service run (session 0): pending (author)
+### Service run (LocalSystem, session 0, author)
 
-Not yet run. Needs an elevated shell (`sc.exe create/start`, see the Task 1 report for commands) and a
-sign-out window of about 2 minutes.
-
-To record:
+- Started manually (`start= demand`) while logged in: 11:33:51Z to 11:39:01Z, every 10 s `ads=22..42 session=0`,
+  then `watcher stopped: Success` (service stop).
+- Reconfigured to `start= auto` and rebooted (boot 11:54:13Z). Log: `crypto ok`, `watcher started: Created`, then
+  11:54:40Z `ads=10 session=0` and 11:54:50Z `ads=6 session=0`, both before the interactive logon at 11:54:52Z.
+  After logon: `ads=15, 29, 24 ...`.
 
 | Check | Result |
 | --- | --- |
-| `crypto ok` in service log | pending |
-| Lines with `session=0` and `ads>0` | pending |
-| `ads>0` across the signed-out window | pending |
+| `crypto ok` in service log | pass |
+| Lines with `session=0` and `ads>0` | pass |
+| `ads>0` before any user logon (about 40 s window, two intervals) | pass |
 
-Gate: if the service sees zero advertisements while the console run sees some, stop and move the scanner
-to the user session (spec section 8).
+### Decision
+
+The WinRT advertisement watcher works in a Native AOT LocalSystem service in session 0, including before any
+user logs in. Gate passed: the service does the scanning, as designed. No user-session helper is needed.

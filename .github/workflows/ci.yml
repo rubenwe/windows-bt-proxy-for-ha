@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Weekly: catches aioesphomeapi / Home Assistant protocol drift.
+    - cron: '0 4 * * 1'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Test
+        run: dotnet test -c Release
+
+      # Native AOT; Directory.Build.props sets TreatWarningsAsErrors, so any warning fails the build.
+      - name: Publish win-x64
+        run: dotnet publish src/WindowsBtProxy -c Release -r win-x64
+
+      - name: Publish win-arm64
+        run: dotnet publish src/WindowsBtProxy -c Release -r win-arm64
+
+      # Upload before the interop tests so a failing interop run still leaves the binaries to inspect.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-bt-proxy-win-x64
+          path: src/WindowsBtProxy/bin/Release/net11.0-windows10.0.26100.0/win-x64/publish/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-bt-proxy-win-arm64
+          path: src/WindowsBtProxy/bin/Release/net11.0-windows10.0.26100.0/win-arm64/publish/
+          if-no-files-found: error
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install interop test dependencies
+        run: pip install -r tests/interop/requirements.txt
+
+      - name: Interop tests (aioesphomeapi)
+        run: pytest tests/interop -q

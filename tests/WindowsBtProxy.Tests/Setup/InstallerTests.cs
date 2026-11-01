@@ -591,6 +591,34 @@ public sealed class InstallerTests : IDisposable
     }
 
     [Fact]
+    public async Task Upgrade_fails_when_the_locked_exe_was_the_service_still_running()
+    {
+        SeedInstall();
+        // net stop gave up: the service still runs the old image, so the copy has to move it aside and sc start finds it running.
+        _runner.Handler = line => line.StartsWith("sc.exe start", StringComparison.Ordinal) ? 1056 : 0;
+        using var running = new FileStream(InstalledExe, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+
+        var e = await Assert.ThrowsAsync<SetupException>(() => NewInstaller().InstallAsync(tray: true, CancellationToken.None));
+
+        Assert.Equal(
+            "The service WindowsBtProxyForHA did not stop and is still running the previous version. Stop it (net stop WindowsBtProxyForHA) and run install again.",
+            e.Message);
+        Assert.Contains("in use (e.g. by a running tray icon)", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Install_without_a_locked_exe_accepts_a_service_that_is_already_running()
+    {
+        SeedInstall();
+        _runner.Handler = line => line.StartsWith("sc.exe start", StringComparison.Ordinal) ? 1056 : 0;
+
+        await NewInstaller().InstallAsync(tray: true, CancellationToken.None);
+
+        Assert.Equal("new build", File.ReadAllText(InstalledExe));
+        Assert.Empty(Directory.GetFiles(_box.ProgramDir, "*.old"));
+    }
+
+    [Fact]
     public void A_file_open_like_a_running_image_can_be_renamed()
     {
         // What Upgrade_moves_a_locked_exe_aside relies on, shown on its own.

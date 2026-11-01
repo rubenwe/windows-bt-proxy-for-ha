@@ -66,7 +66,7 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
         log.LogInformation("Stopping the service if it is running.");
         await runner.RunAsync("net.exe", $"stop {ServiceName}", ct);
 
-        await CopyProgramAsync(source, paths.ExePath, ct);
+        var movedAside = await CopyProgramAsync(source, paths.ExePath, ct);
 
         var storedPort = ReadPortOrDefault();
         var port = PrepareDataDir().Port;
@@ -124,6 +124,14 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
 
         await WarnIfPublicNetworkAsync(ct);
 
+        if (start.ExitCode == ErrorServiceAlreadyRunning && movedAside)
+        {
+            // The file was moved aside because something still ran it, and that something was the service: net stop gave up, so the
+            // service keeps running the previous version. Not a success, even though everything else is in place.
+            throw new SetupException(
+                $"The service {ServiceName} did not stop and is still running the previous version. " +
+                $"Stop it (net stop {ServiceName}) and run install again.");
+        }
         if (start.ExitCode != 0 && start.ExitCode != ErrorServiceAlreadyRunning)
         {
             throw Failed("sc.exe", start, "start the service; it is installed, so check the log in " + paths.Data.LogDir);
@@ -182,15 +190,18 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
         }
     }
 
-    private async Task CopyProgramAsync(string source, string target, CancellationToken ct)
+    /// <returns>True when the existing program file was in use and had to be moved aside before copying.</returns>
+    private async Task<bool> CopyProgramAsync(string source, string target, CancellationToken ct)
     {
         Directory.CreateDirectory(paths.ProgramDir);
         DeleteLeftoverOldFiles();
         if (SamePath(source, target))
         {
             log.LogInformation("Already running from {Path}; not copying.", target);
-            return;
+            return false;
         }
+
+        var movedAside = false;
 
         for (var attempt = 1; ; attempt++)
         {
@@ -198,13 +209,15 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
             {
                 File.Copy(source, target, overwrite: true);
                 log.LogInformation("Copied the program to {Path}.", target);
-                return;
+                return movedAside;
             }
             catch (IOException e) when (attempt < 5)
             {
-                // A running tray maps the file, so it cannot be overwritten, but it can be renamed; the trays then restart into the new copy.
+                // A running image (usually a tray) cannot be overwritten, but it can be renamed; trays then restart into the new copy.
+                // It may also be the service, if net stop gave up; InstallAsync checks for that once it starts the service.
                 if ((e.HResult & 0xFFFF) == ErrorSharingViolation && File.Exists(target) && TryMoveAside(target))
                 {
+                    movedAside = true;
                     continue;
                 }
                 // The service was just stopped; Windows can take a moment to let go of the old file.
@@ -240,7 +253,7 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
         try
         {
             File.Move(target, aside);
-            log.LogInformation("{Path} is in use (a tray icon is running it); moved it aside to {Aside}.", target, Path.GetFileName(aside));
+            log.LogInformation("{Path} is in use (e.g. by a running tray icon); moved it aside to {Aside}.", target, Path.GetFileName(aside));
             return true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)

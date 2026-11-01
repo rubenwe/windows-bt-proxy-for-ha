@@ -159,6 +159,41 @@ public sealed class SettingsStoreTests : IDisposable
         Assert.Contains(_log.Lines, l => l.StartsWith("Warning:"));
     }
 
+    [Fact]
+    public void LoadOrCreate_uses_defaults_and_leaves_the_file_alone_when_it_is_locked()
+    {
+        Directory.CreateDirectory(_root);
+        const string original = "{ \"port\": 7000 }";
+        File.WriteAllText(Paths.SettingsFile, original);
+
+        ProxySettings settings;
+        using (new FileStream(Paths.SettingsFile, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            settings = SettingsStore.LoadOrCreate(Paths, "PC1", _log);
+        }
+
+        Assert.Equal(6053, settings.Port);
+        Assert.Equal("bt-proxy-pc1", settings.Name);
+        Assert.Equal(original, File.ReadAllText(Paths.SettingsFile));
+        Assert.False(File.Exists(Paths.SettingsFile + ".bad"));
+        Assert.Contains(_log.Lines, l => l.StartsWith("Warning:"));
+    }
+
+    [Fact]
+    public void LoadOrCreate_does_not_overwrite_a_corrupt_file_it_could_not_move_aside()
+    {
+        Directory.CreateDirectory(_root);
+        File.WriteAllText(Paths.SettingsFile, "{ not json");
+        // A non-empty directory at the .bad path makes the move fail.
+        Directory.CreateDirectory(Paths.SettingsFile + ".bad");
+        File.WriteAllText(Path.Combine(Paths.SettingsFile + ".bad", "keep"), "x");
+
+        var settings = SettingsStore.LoadOrCreate(Paths, "PC1", _log);
+
+        Assert.Equal("bt-proxy-pc1", settings.Name);
+        Assert.Equal("{ not json", File.ReadAllText(Paths.SettingsFile));
+    }
+
     public void Dispose()
     {
         Directory.Delete(Directory.GetParent(_root)!.FullName, recursive: true);

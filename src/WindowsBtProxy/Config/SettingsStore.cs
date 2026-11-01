@@ -22,6 +22,12 @@ public static class SettingsStore
             TryWrite(paths, defaults, log);
             return defaults;
         }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // Locked (antivirus, an editor) or access denied: the file may be fine, so leave it exactly as it is.
+            log.LogWarning(e, "Could not read {File}; using defaults without touching the file.", paths.SettingsFile);
+            return defaults;
+        }
 
         ProxySettings? parsed = null;
         string? problem = null;
@@ -44,7 +50,9 @@ public static class SettingsStore
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
-                log.LogWarning(e, "Could not move the invalid settings file aside.");
+                // Writing defaults now would destroy the only copy of the user's file, so run on defaults in memory instead.
+                log.LogWarning(e, "Could not move the invalid settings file aside; leaving it in place and using defaults.");
+                return defaults;
             }
             TryWrite(paths, defaults, log);
             return defaults;

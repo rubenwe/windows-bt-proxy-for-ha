@@ -6,17 +6,17 @@
 
 **Architecture:** One exe (`windows-bt-proxy.exe`) with subcommands. The service hosts a WinRT BLE scanner, a per-client batching fan-out, and an ESPHome Native API server on TCP that speaks plaintext only until HA provisions a Noise key over a zero-PSK session, then Noise only. Discovery goes through Windows' own DNS-SD (`DnsServiceRegister`).
 
-**Tech Stack:** .NET 11 (C#), Native AOT, `Google.Protobuf` + `Grpc.Tools` (code from ESPHome's `api.proto`), `BouncyCastle.Cryptography` (X25519, ChaCha20-Poly1305), `Microsoft.Extensions.Hosting.WindowsServices`, xUnit v3, Python `pytest` + `aioesphomeapi` for interop tests.
+**Tech Stack:** .NET 11 (C#), Native AOT, `Google.Protobuf` + `Grpc.Tools` (code from ESPHome's `api.proto`), BCL crypto only (`X25519DiffieHellman`, `ChaCha20Poly1305`), `Microsoft.Extensions.Hosting.WindowsServices`, xUnit v3, Python `pytest` + `aioesphomeapi` for interop tests.
 
 **Spec:** `docs/superpowers/specs/2026-11-01-windows-bt-proxy-for-ha-design.md`
 
-**Later plans (not in this one):** plan 2 = tray app + named-pipe status IPC (spec §5.8); plan 3 = update check/apply + Ed25519-signed GitHub releases (spec §5.9, release half of §6). This plan leaves the `updates` settings in the file but nothing reads them yet.
+**Later plans (not in this one):** plan 2 = tray app + named-pipe status IPC (spec §5.8); plan 3 = update check/apply + ECDSA-signed GitHub releases (spec §5.9, release half of §6). This plan leaves the `updates` settings in the file but nothing reads them yet.
 
 **Reference implementation:** the Python spike, `integrations/windows-bt-proxy/bt_proxy.py (in the author's private home-automation repo)`, with a venv in the same folder (`.venv`, `aioesphomeapi` 46.25.0). The Noise reference is `.venv\Lib\site-packages\aioesphomeapi\_frame_helper\noise.py`.
 
 ## Global Constraints
 
-- Target framework `net11.0-windows10.0.19041.0`, `SupportedOSPlatformVersion` `10.0.17763.0` (Windows 10 1809+). SDK pinned in `global.json` to `11.0.100-rc.3.26522.148`, `rollForward: latestFeature`, `allowPrerelease: true`; move to 11.0 GA when it ships.
+- Target framework `net11.0-windows10.0.26100.0`, `SupportedOSPlatformVersion` `10.0.22000.0` (Windows 11 only — no Windows 10). At start, `ChaCha20Poly1305.IsSupported` and `X25519DiffieHellman.IsSupported` must both be true, else exit code 4 with a clear message. SDK pinned in `global.json` to `11.0.100-rc.3.26522.148`, `rollForward: latestFeature`, `allowPrerelease: true`; move to 11.0 GA when it ships.
 - `PublishAot=true`, `SelfContained=true`, runtimes `win-x64` and `win-arm64`. `TreatWarningsAsErrors=true` everywhere, AOT/trim analyzers on (`IsAotCompatible=true`). Zero AOT/trim warnings is a requirement, not a goal.
 - No reflection-based serialization: `System.Text.Json` only via source-generated contexts; protobuf binary only.
 - Names: exe `windows-bt-proxy.exe`; root namespace `WindowsBtProxy`; service name `WindowsBtProxyForHA`, display name `Windows BT Proxy for Home Assistant`; data dir `%ProgramData%\WindowsBtProxyForHA\`; install dir `%ProgramFiles%\WindowsBtProxyForHA\`; firewall rule `Windows BT Proxy for Home Assistant (TCP <port>)`.
@@ -99,7 +99,7 @@ Settles spec §8 risks 1 and 2 before anything else. **Gate:** if the service se
 
 - [ ] **Step 1: Write the probe**
 
-`Program.cs`: a `Host.CreateApplicationBuilder` app with `AddWindowsService()` and one `BackgroundService` that (a) at start does an X25519 key agreement between two BouncyCastle key pairs and a ChaCha20-Poly1305 (BouncyCastle `ChaCha20Poly1305`) encrypt/decrypt round trip, logging `crypto ok`/`crypto FAILED`; (b) starts a `BluetoothLEAdvertisementWatcher` (passive) and every 10 s appends `"{UtcNow:o} ads={count} session={Process.GetCurrentProcess().SessionId}"` to `%ProgramData%\BtProbe\probe.log`, resetting the count.
+`Program.cs`: a `Host.CreateApplicationBuilder` app with `AddWindowsService()` and one `BackgroundService` that (a) at start does an X25519 key agreement between two `X25519DiffieHellman.GenerateKey()` keys and a BCL `ChaCha20Poly1305` encrypt/decrypt round trip (proves both work under Native AOT and in session 0), logging `crypto ok`/`crypto FAILED`; (b) starts a `BluetoothLEAdvertisementWatcher` (passive) and every 10 s appends `"{UtcNow:o} ads={count} session={Process.GetCurrentProcess().SessionId}"` to `%ProgramData%\BtProbe\probe.log`, resetting the count.
 
 - [ ] **Step 2: Publish with Native AOT, zero warnings**
 
@@ -114,7 +114,7 @@ Expected: `crypto ok`, then lines with `ads>0` and `session=1` (or the user's se
 - [ ] **Step 4: Service run (author, elevated)**
 
 ```powershell
-sc.exe create BtProbe binPath= "W:\windows-bt-proxy-for-ha\spikes\ServiceScanProbe\bin\Release\net11.0-windows10.0.19041.0\win-x64\publish\ServiceScanProbe.exe" start= demand
+sc.exe create BtProbe binPath= "W:\windows-bt-proxy-for-ha\spikes\ServiceScanProbe\bin\Release\net11.0-windows10.0.26100.0\win-x64\publish\ServiceScanProbe.exe" start= demand
 sc.exe start BtProbe
 ```
 
@@ -253,8 +253,8 @@ Behaviour per spec §5.3 table: Hello → HelloResponse (1.13, `server_info = "w
 
 **Interfaces:**
 - Produces:
-  - `sealed class CipherState(byte[] key) { byte[] Encrypt(ReadOnlySpan<byte> plaintext); byte[] Decrypt(ReadOnlySpan<byte> ciphertext); }` — ChaCha20-Poly1305 (BouncyCastle), nonce = 4 zero bytes ‖ 8-byte little-endian counter, empty associated data, counter += 1 per call; `Decrypt` throws `CryptographicException` on tag failure
-  - `sealed class NoiseResponder(ReadOnlySpan<byte> psk32, X25519PrivateKey? ephemeralForTests = null) { void ReadMessageA(ReadOnlySpan<byte> m); byte[] WriteMessageB(); (CipherState Send, CipherState Receive) Split(); }`
+  - `sealed class CipherState(byte[] key) { byte[] Encrypt(ReadOnlySpan<byte> plaintext); byte[] Decrypt(ReadOnlySpan<byte> ciphertext); }` — BCL `ChaCha20Poly1305`, nonce = 4 zero bytes ‖ 8-byte little-endian counter, empty associated data, counter += 1 per call; `Decrypt` throws `CryptographicException` on tag failure
+  - `sealed class NoiseResponder(ReadOnlySpan<byte> psk32, X25519DiffieHellman? ephemeralForTests = null) { void ReadMessageA(ReadOnlySpan<byte> m); byte[] WriteMessageB(); (CipherState Send, CipherState Receive) Split(); }`
   - `sealed class NoiseInitiator(ReadOnlySpan<byte> psk32, ...)` — same shape mirrored, used by tests only
   - `sealed class NoiseFrameCodec(Stream stream, CipherState send, CipherState receive) : IFrameCodec` — inner plaintext = `type_hi, type_lo, len_hi, len_lo, payload`; outer `0x01, len_hi, len_lo, ciphertext`
   - `static class NoiseServerHandshake { Task<NoiseFrameCodec> RunAsync(Stream s, ReadOnlyMemory<byte> psk, string nameForHello, string macHex, CancellationToken ct); }` — protocol per `aioesphomeapi/_frame_helper/noise.py`: read client-hello frame (empty payload), read handshake frame (`0x00` + message A); send server-hello frame (`0x01` + name + `\0` + macHex + `\0`); on decrypt failure send frame `0x01` + `"Handshake MAC failure"` and throw `NoiseAuthenticationException`; else send frame `0x00` + message B
@@ -424,7 +424,7 @@ The proxy re-publishes on `NetworkChange.NetworkAddressChanged` and on `Encrypti
 - Produces:
   - `static class ProxyHost { Task<int> RunAsync(ProxyHostOptions o, CancellationToken ct); }`; `sealed record ProxyHostOptions(DataPaths Paths, bool AsService, bool FakeScanner, bool NoMdns, int? PortOverride)`
   - Commands: `run [--data-dir <dir>] [--fake-scanner] [--no-mdns] [--port <n>]` (console, Ctrl+C stops), `service` (what the SCM starts; same as run with `AsService`), `version`
-  - Exit codes: 0 normal, 2 corrupt key (`KeyStoreCorruptException` → error logged, API never started), 3 port in use
+  - Exit codes: 0 normal, 2 corrupt key (`KeyStoreCorruptException` → error logged, API never started), 3 port in use, 4 BCL crypto unsupported (see Global Constraints)
   - Per-minute info log: `"{n} advertisements in the last minute, {clients} client(s), status {status}"`
 
 Interop fixture (`conftest.py`): builds once (`dotnet build -c Debug`), starts `windows-bt-proxy.exe run --fake-scanner --no-mdns --port <free> --data-dir <tmp>`, waits for the port, yields `(host, port, data_dir)`, kills the process after the test.
@@ -485,7 +485,7 @@ async def test_corrupt_key_file_exits_2(tmp_path)     # write garbage noise.key,
 - Create: `.github/workflows/ci.yml`, `README.md`, `LICENSE` (MIT, "Ruben W."), finish `docs/decisions.md`
 
 - [ ] **Step 1: `ci.yml`** — triggers: push, pull_request, `schedule: cron '0 4 * * 1'` (weekly, catches aioesphomeapi/HA protocol drift). Job on `windows-latest`: `actions/setup-dotnet` (from `global.json`), `dotnet test`, `dotnet publish src/WindowsBtProxy -c Release -r win-x64` and `-r win-arm64` (AOT; warnings fail), `actions/setup-python` 3.12 + `pip install -r tests/interop/requirements.txt`, `pytest tests/interop -q`, upload both publish folders as artifacts.
-- [ ] **Step 2: README** — what it is (ESPHome-compatible passive Bluetooth proxy for Home Assistant), the OHF non-affiliation line, requirements, install (`windows-bt-proxy.exe install` as admin; SmartScreen "More info → Run anyway"), adding in HA (Discovered, or Add integration → ESPHome → host/port; key is provisioned automatically), settings table (spec §5.6), `key` commands, uninstall, logs location, limits (passive only; only while the PC is awake).
+- [ ] **Step 2: README** — what it is (ESPHome-compatible passive Bluetooth proxy for Home Assistant), the OHF non-affiliation line, requirements (Windows 11, x64 or ARM64, Bluetooth LE adapter), install (`windows-bt-proxy.exe install` as admin; SmartScreen "More info → Run anyway"), adding in HA (Discovered, or Add integration → ESPHome → host/port; key is provisioned automatically), settings table (spec §5.6), `key` commands, uninstall, logs location, limits (passive only; only while the PC is awake).
 - [ ] **Step 3: Push and watch CI** — `git push -u origin main` (author has approved the remote); CI green.
 - [ ] **Step 4: Commit** `ci: build, test, AOT publish; docs: README and licence`
 

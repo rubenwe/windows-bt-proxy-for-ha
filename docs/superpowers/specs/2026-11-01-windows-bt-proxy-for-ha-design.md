@@ -53,7 +53,7 @@ no OHF logos, and the README says it is not affiliated with or endorsed by OHF.
 - MSI installer, winget, Microsoft Store, paid code signing — later, if ever.
 - A configuration UI. Settings are a file; the tray only displays.
 - Decoding sensor data. The proxy forwards raw advertisements; HA's integrations decode.
-- Linux/macOS. Windows 10 1809+ and Windows 11 only.
+- Linux/macOS, and **Windows 10** (author's decision). Windows 11 only.
 
 ## 4. Decisions already made
 
@@ -169,14 +169,16 @@ works with stock HA; the manual path stays as a fallback (`key` commands).
 Key storage: in the settings directory (§5.6), file ACL'd to SYSTEM + Administrators. DPAPI
 (machine scope) on top is the builder's call.
 
-**Noise crypto in .NET:** ChaCha20-Poly1305 and SHA-256 are in the BCL; X25519 is not. Choose a
-small, AOT-compatible, MIT/BSD-licensed implementation (e.g. NSec, BouncyCastle, or a vetted
-standalone X25519) — builder's call, record the choice.
+**Noise crypto in .NET:** everything is in the BCL on Windows 11 with .NET 11 —
+`ChaCha20Poly1305`, `X25519DiffieHellman` (new in .NET 11, CNG-backed; `GenerateKey`,
+`ImportPrivateKey`, `ExportPublicKey`, `DeriveRawSecretAgreement`), SHA-256, HMAC-SHA256. No
+third-party crypto. Both report `IsSupported = true` on the dev PC (Windows 11 build 26300); the
+service checks both at start and refuses to run if either is unsupported.
 
 ### 5.5 Discovery (mDNS)
 
 Register `_esphomelib._tcp` via the Windows DNS-SD API (`DnsServiceRegister` in `dnsapi.dll`,
-P/Invoke, Windows 10 1809+) so Windows' own mDNS responder answers. Instance/host name = proxy
+P/Invoke) so Windows' own mDNS responder answers. Instance/host name = proxy
 name; TXT records as ESPHome sends them (at least `mac` lowercase hex without colons, `version`,
 `platform`, `network`, `friendly_name`, plus the encryption-related keys from §5.4).
 
@@ -243,9 +245,10 @@ console does the same without the tray.
 
 - Service checks the GitHub Releases API (latest non-prerelease) once a day and at start.
 - **Verification:** each release ships, per architecture, the .exe zip, a SHA-256 file, and an
-  **Ed25519 signature** over the SHA-256 file. The public key is compiled into the program; the
+  **ECDSA P-256 / SHA-256 signature** over the SHA-256 file (designer's call: .NET 11 has no
+  built-in Ed25519, and ECDSA keeps updates free of third-party crypto). The public key is compiled into the program; the
   private key lives only in a GitHub Actions secret. The service refuses any update whose
-  signature doesn't verify. (Ed25519 verify in .NET: same library decision as X25519.)
+  signature doesn't verify.
 - `updates.auto = false`: tray shows "update available"; the user clicks Install.
 - `updates.auto = true`: service installs by itself.
 - Install mechanics (builder's call): download to a temp dir, verify, stage the new exe, stop the
@@ -274,7 +277,7 @@ M clients"), protocol detail at debug.
     entry rather than adding a second one. Verify that.
   - GitHub: public remote `git@github.com:rubenwe/windows-bt-proxy-for-ha.git` (set up by the
     author). CI runs there once pushed. The builder generates the
-    Ed25519 release key pair, commits only the public key, and hands the private key to the author
+    release signing key pair, commits only the public key, and hands the private key to the author
     to store as an Actions secret. The first tagged release is the end-to-end test of signing and
     updating.
 - **Repo layout** (builder's call), but keep the vendored `api.proto` pinned and its ESPHome
@@ -291,7 +294,7 @@ M clients"), protocol detail at debug.
     weekly schedule too, not only on push.
   - Manual on real hardware before each release: install on a PC, adopt in HA, see a known sensor
     update through it.
-- **Release:** pushing tag `vX.Y.Z` builds, signs (Ed25519, §5.9), and publishes a GitHub Release
+- **Release:** pushing tag `vX.Y.Z` builds, signs (§5.9), and publishes a GitHub Release
   with zips + checksums + signatures. Versions follow SemVer.
 - **SmartScreen:** releases are not code-signed (no certificate), so Windows warns on first run.
   Say so in the README with the "More info → Run anyway" step. Revisit signing later.

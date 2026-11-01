@@ -115,7 +115,10 @@ public sealed class ProxyHostTests : IDisposable
         Assert.Equal(scmExitCode, ProxyRuntime.ScmExitCodeFor(processExitCode));
     }
 
-    private ProxyHostOptions Options() => new(new DataPaths(Path.Combine(_dir, "data")), AsService: false, FakeScanner: true, NoMdns: true, PortOverride: 0, ProtectKeyFile: false);
+    /// <summary>A host for tests: fake scanner, no mDNS, a temp data dir and its own pipe (the installed service owns the default one).</summary>
+    private ProxyHostOptions Options() => new(new DataPaths(Path.Combine(_dir, "data")), AsService: false, FakeScanner: true, NoMdns: true, PortOverride: 0, ProtectKeyFile: false, PipeName: UniquePipeName());
+
+    private static string UniquePipeName() => $"wbp-test-{Guid.NewGuid():N}";
 
     [Fact]
     public async Task The_data_dir_is_protected_and_verified_before_anything_is_read_or_written()
@@ -132,7 +135,7 @@ public sealed class ProxyHostTests : IDisposable
         await cts.CancelAsync();
         var exitCode = await run.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-        Assert.Equal(0, exitCode);
+        Assert.True(exitCode == 0, $"exit code {exitCode}; the host's log:\n{Log(options)}");
         Assert.Equal(["apply (dir exists: False, settings exist: False)", "verify (settings exist: False)"], events);
     }
 
@@ -171,12 +174,10 @@ public sealed class ProxyHostTests : IDisposable
         Assert.Null(new DataDirProtector(_ => { }, _ => { }).TryProtect(@"C:\data"));
     }
 
-    private static string UniquePipeName() => $"wbp-test-{Guid.NewGuid():N}";
-
     [Fact]
     public async Task Status_pipe_serves_the_running_proxy()
     {
-        var options = Options() with { PipeName = UniquePipeName() };
+        var options = Options();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var run = ProxyHost.RunAsync(options, cts.Token, protector: null);
 

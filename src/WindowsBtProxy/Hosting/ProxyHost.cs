@@ -344,6 +344,8 @@ internal sealed class ProxyRuntime(
             Volatile.Write(ref api, apiTask); // published for the status pipe, which reads it from other threads
             if (apiTask.IsCompleted)
             {
+                // A stop that came in since the adapter wait ends the API at once, and that is no failure: go straight to shutdown.
+                stopping.ThrowIfCancellationRequested();
                 await ThrowStartFailureAsync(apiTask, port).ConfigureAwait(false);
             }
 

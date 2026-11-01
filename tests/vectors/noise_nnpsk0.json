@@ -1,0 +1,31 @@
+{
+  "protocol": "Noise_NNpsk0_25519_ChaChaPoly_SHA256",
+  "generator": "noiseprotocol 0.3.1 via tests/vectors/make_noise_vectors.py",
+  "prologue": "4e6f697365415049496e69740000",
+  "psk": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "initiator_ephemeral_private": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "responder_ephemeral_private": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "message_a": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd1662548b18e980a5463f4f4ed6a227d01eebb1",
+  "message_b": "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a08d629a47626962aacde23c4ab9801ba",
+  "handshake_hash": "b1bfdfac0bc19212b0d33f07d59a377677ba89dc872aaed5901488c9961b67c3",
+  "initiator_to_responder": [
+    {
+      "plaintext": "00010000",
+      "ciphertext": "afbce0af929908ef8bc50a35b078633bdf444713"
+    },
+    {
+      "plaintext": "0009000568656c6c6f",
+      "ciphertext": "85357af53747338fe60a7063225dee7e7f1ef947d61ed4076a"
+    }
+  ],
+  "responder_to_initiator": [
+    {
+      "plaintext": "00020000",
+      "ciphertext": "8500850cc066513a6d478596bbb51a1fc8016333"
+    },
+    {
+      "plaintext": "000a000b62742d70726f78792d7821",
+      "ciphertext": "d5d58e6368d85fb3cbe89d0cf6c8d0383b4d7e094b1c40d892854f05f457d9"
+    }
+  ]
+}

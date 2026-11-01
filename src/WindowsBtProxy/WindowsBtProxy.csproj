@@ -18,4 +18,9 @@
     <Protobuf Include="..\..\proto\*.proto" GrpcServices="None" ProtoRoot="..\..\proto" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Lets tests reach test-only seams such as CipherState's starting nonce. -->
+    <InternalsVisibleTo Include="WindowsBtProxy.Tests" />
+  </ItemGroup>
+
 </Project>

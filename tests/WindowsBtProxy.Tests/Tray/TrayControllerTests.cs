@@ -122,6 +122,57 @@ public sealed class TrayControllerTests
     }
 
     [Fact]
+    public void A_refused_first_add_is_retried_with_the_next_answer_even_when_the_light_is_unchanged()
+    {
+        var harness = new Harness();
+        harness.Icon.ShellAccepts = false; // Explorer busy at sign-in, TaskbarCreated already gone by.
+        harness.Controller.Start();
+        harness.Requests[0].SetResult(null);
+
+        harness.Icon.ShellAccepts = true;
+        harness.Controller.Tick();
+        harness.Requests[1].SetResult(null);
+        harness.Controller.Tick();
+        harness.Requests[2].SetResult(Respond());
+
+        Assert.Equal(
+            [("Add", NotRunning), ("Add", NotRunning), ("Add", NotRunning), ("Update", TrayLight.Evaluate(Respond()))],
+            harness.Icon.Calls);
+    }
+
+    [Fact]
+    public void A_refused_update_adds_the_icon_with_the_next_answer()
+    {
+        var harness = new Harness();
+        harness.Controller.Start();
+        harness.Icon.ShellAccepts = false;
+        harness.Requests[0].SetResult(Respond());
+
+        harness.Icon.ShellAccepts = true;
+        harness.Controller.Tick();
+        harness.Requests[1].SetResult(Respond());
+
+        Assert.Equal(["Add", "Update", "Add"], harness.Icon.Calls.Select(c => c.Op));
+        Assert.Equal(Light.Amber, harness.Icon.Calls[^1].View.Light);
+    }
+
+    [Fact]
+    public void A_refused_add_after_taskbar_created_is_retried_with_the_next_answer()
+    {
+        var harness = new Harness();
+        harness.Controller.Start();
+        harness.Requests[0].SetResult(Respond());
+        harness.Icon.ShellAccepts = false;
+
+        harness.Controller.OnTaskbarCreated();
+        harness.Icon.ShellAccepts = true;
+        harness.Controller.Tick();
+        harness.Requests[1].SetResult(Respond());
+
+        Assert.Equal(["Add", "Update", "Add", "Add"], harness.Icon.Calls.Select(c => c.Op));
+    }
+
+    [Fact]
     public void A_request_still_pending_at_the_deadline_is_cancelled()
     {
         var harness = new Harness();
@@ -188,9 +239,20 @@ public sealed class TrayControllerTests
     {
         public List<(string Op, TrayView View)> Calls { get; } = [];
 
-        public void Add(TrayView view) => Calls.Add(("Add", view));
+        /// <summary>What the shell answers to the next Add and Update calls.</summary>
+        public bool ShellAccepts { get; set; } = true;
 
-        public void Update(TrayView view) => Calls.Add(("Update", view));
+        public bool Add(TrayView view)
+        {
+            Calls.Add(("Add", view));
+            return ShellAccepts;
+        }
+
+        public bool Update(TrayView view)
+        {
+            Calls.Add(("Update", view));
+            return ShellAccepts;
+        }
 
         public void Remove() => Calls.Add(("Remove", default));
     }

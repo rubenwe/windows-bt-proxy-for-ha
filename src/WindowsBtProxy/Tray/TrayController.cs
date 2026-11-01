@@ -29,6 +29,12 @@ internal sealed class TrayController(
     private CancellationTokenSource? _inFlight;
     private bool _disposed;
 
+    /// <summary>
+    /// Whether the shell took the icon. At sign-in Explorer can refuse the first add after it already broadcast TaskbarCreated, so no
+    /// second chance would come from there: every answer tries again until the icon is in.
+    /// </summary>
+    private bool _shown;
+
     /// <summary>What the icon shows now.</summary>
     public TrayView Current { get; private set; } = TrayLight.Evaluate(null);
 
@@ -41,7 +47,7 @@ internal sealed class TrayController(
     /// <summary>Shows the icon as red "service not running" until the first answer arrives, and asks for that answer.</summary>
     public void Start()
     {
-        icon.Add(Current);
+        _shown = icon.Add(Current);
         Tick();
     }
 
@@ -83,7 +89,7 @@ internal sealed class TrayController(
     }
 
     /// <summary>Explorer restarted and lost every icon: add ours again, as it looks now.</summary>
-    public void OnTaskbarCreated() => icon.Add(Current);
+    public void OnTaskbarCreated() => _shown = icon.Add(Current);
 
     /// <summary>Cancels a request in flight; its answer, if it still comes, is ignored.</summary>
     public void Dispose()
@@ -107,10 +113,16 @@ internal sealed class TrayController(
         // Any failure (a fault, the deadline) means the same as no answer: the service cannot be asked.
         LastResponse = finished.IsCompletedSuccessfully ? finished.Result : null;
         var view = TrayLight.Evaluate(LastResponse);
-        if (view != Current)
+        var changed = view != Current;
+        Current = view;
+        if (!_shown)
         {
-            Current = view;
-            icon.Update(view);
+            _shown = icon.Add(view);
+        }
+        else if (changed)
+        {
+            // A refused update most likely means the icon is gone; add it again with the next answer.
+            _shown = icon.Update(view);
         }
         Changed?.Invoke();
     }

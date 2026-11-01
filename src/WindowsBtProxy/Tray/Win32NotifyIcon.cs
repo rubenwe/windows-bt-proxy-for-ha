@@ -14,7 +14,7 @@ namespace WindowsBtProxy.Tray;
 /// <param name="iconFor">The <c>HICON</c> for a light; the shell copies it, so the caller keeps ownership.</param>
 internal sealed unsafe class Win32NotifyIcon(nint hwnd, Guid guid, uint callbackMessage, Func<Light, nint> iconFor) : INotifyIcon
 {
-    public void Add(TrayView view)
+    public bool Add(TrayView view)
     {
         var data = Data(view, Native.NIF_MESSAGE | Native.NIF_ICON | Native.NIF_TIP | Native.NIF_SHOWTIP);
         if (!Native.Shell_NotifyIconW(Native.NIM_ADD, data))
@@ -23,19 +23,20 @@ internal sealed unsafe class Win32NotifyIcon(nint hwnd, Guid guid, uint callback
             _ = Native.Shell_NotifyIconW(Native.NIM_DELETE, Data(default, 0));
             if (!Native.Shell_NotifyIconW(Native.NIM_ADD, data))
             {
-                // No taskbar yet (early in sign-in): TaskbarCreated arrives once there is one, and the icon is added then.
+                // No taskbar yet, or Explorer too busy: TrayController tries again with the next answer.
                 Debug.WriteLine("tray: Shell_NotifyIcon(NIM_ADD) failed");
-                return;
+                return false;
             }
         }
 
         var version = Data(default, 0);
         version.UVersion = Native.NOTIFYICON_VERSION_4;
         _ = Native.Shell_NotifyIconW(Native.NIM_SETVERSION, version);
+        return true;
     }
 
-    public void Update(TrayView view)
-        => _ = Native.Shell_NotifyIconW(Native.NIM_MODIFY, Data(view, Native.NIF_ICON | Native.NIF_TIP | Native.NIF_SHOWTIP));
+    public bool Update(TrayView view)
+        => Native.Shell_NotifyIconW(Native.NIM_MODIFY, Data(view, Native.NIF_ICON | Native.NIF_TIP | Native.NIF_SHOWTIP));
 
     public void Remove() => _ = Native.Shell_NotifyIconW(Native.NIM_DELETE, Data(default, 0));
 

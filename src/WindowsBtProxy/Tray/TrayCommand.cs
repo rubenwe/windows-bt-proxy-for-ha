@@ -34,14 +34,14 @@ internal static class TrayCommand
             return 1;
         }
 
-        using var mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
-        if (!createdNew)
+        var instance = SingleInstance.TryAcquire(MutexName);
+        if (instance is null)
         {
             return 0;
         }
 
         TrayExit exit;
-        try
+        using (instance)
         {
             var runningFromInstall = RunningFromInstall();
             using var window = TrayWindow.Create(
@@ -50,12 +50,9 @@ internal static class TrayCommand
                 () => CheckLifecycle(runningFromInstall));
             exit = window.Run();
         }
-        finally
-        {
-            // The icon is gone by now (disposing the window removes it), so the next tray can take over cleanly.
-            mutex.ReleaseMutex();
-        }
 
+        // The icon is gone (disposing the window removed it) and the mutex is released and closed, so the tray started below can
+        // take both over, however fast it starts.
         if (exit == TrayExit.RestartInto)
         {
             StartInstalledTray();

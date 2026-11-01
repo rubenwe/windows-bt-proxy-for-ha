@@ -361,12 +361,19 @@ internal sealed unsafe class TrayWindow : IDisposable
 
             case Native.WM_DESTROY:
                 // The status window first: closing it sets the poll timer back, which must happen before the timers go.
-                _status?.Close();
-                _ = Native.KillTimer(_hwnd, PollTimer);
-                _ = Native.KillTimer(_hwnd, LifecycleTimer);
-                _notifyIcon?.Remove();
-                _controller?.Dispose();
-                Native.PostQuitMessage(0);
+                try
+                {
+                    _status?.Close();
+                    _ = Native.KillTimer(_hwnd, PollTimer);
+                    _ = Native.KillTimer(_hwnd, LifecycleTimer);
+                    _notifyIcon?.Remove();
+                    _controller?.Dispose();
+                }
+                finally
+                {
+                    // Whatever failed above, the loop must end: a tray lingering without a window would hold the mutex for the session.
+                    Native.PostQuitMessage(0);
+                }
                 return 0;
 
             default:

@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using ServiceBase = System.ServiceProcess.ServiceBase;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -172,12 +173,14 @@ internal sealed class ProxyRuntime(
     ProxySettings settings,
     ILoggerFactory loggers,
     IHostApplicationLifetime lifetime,
+    IHostLifetime hostLifetime,
     TimeProvider time) : BackgroundService
 {
     internal static readonly TimeSpan SummaryInterval = TimeSpan.FromMinutes(1);
     internal static readonly TimeSpan RepublishDelay = TimeSpan.FromSeconds(2);
     internal static readonly TimeSpan KeyRetryDelay = TimeSpan.FromMilliseconds(500);
-    private static readonly TimeSpan ApiStopTimeout = TimeSpan.FromSeconds(10);
+    // Stop budget: API 5 s + DNS-SD deregistration ~3 s + scanner, inside the 20 s host ShutdownTimeout.
+    private static readonly TimeSpan ApiStopTimeout = TimeSpan.FromSeconds(5);
 
     private readonly ILogger _log = loggers.CreateLogger("WindowsBtProxy");
     private long _advertisements;
@@ -198,10 +201,14 @@ internal sealed class ProxyRuntime(
         catch (Exception e)
         {
             ExitCode = ProxyHost.ExitCodeFor(e);
+            ReportExitCode(ExitCode);
             switch (e)
             {
                 case HostFatalException:
                     _log.LogError("{Message}", e.Message);
+                    break;
+                case KeyStoreCorruptException { InnerException: UnauthorizedAccessException }:
+                    _log.LogError(e, "{Message} The key file is readable only by administrators and the service: run this elevated, or stop the service and check the key with \"windows-bt-proxy key show\" from an elevated terminal. The API is not started.", e.Message);
                     break;
                 case KeyStoreCorruptException:
                     _log.LogError(e, "{Message} The API is not started; fix or remove the key file (windows-bt-proxy key clear) and start again.", e.Message);
@@ -215,6 +222,20 @@ internal sealed class ProxyRuntime(
         {
             // Also covers a fatal error: the host has nothing left to run.
             lifetime.StopApplication();
+        }
+    }
+
+    /// <summary>
+    /// Makes a fatal exit visible outside the process. The process exit code comes from Program; the service control manager only
+    /// looks at the service's own exit code (<c>ServiceBase.ExitCode</c>, reported when the service stops), which
+    /// WindowsServiceLifetime never sets. A non-zero value there is what triggers the service's failure actions (<c>sc failureflag</c>).
+    /// </summary>
+    private void ReportExitCode(int code)
+    {
+        Environment.ExitCode = code;
+        if (hostLifetime is ServiceBase service)
+        {
+            service.ExitCode = code;
         }
     }
 
@@ -247,6 +268,9 @@ internal sealed class ProxyRuntime(
             scanner.Received += onAdvertisement;
             await scanner.StartAsync(stopping).ConfigureAwait(false);
 
+            // Before the adapter wait, so a machine without Bluetooth keeps saying so once a minute.
+            summary = SummaryLoopAsync(scanner, () => server?.Clients.Count ?? 0, running.Token);
+
             var identity = new DeviceIdentity(settings.Name, settings.FriendlyName, await WaitForAdapterAsync(scanner, stopping).ConfigureAwait(false),
                 Environment.MachineName, ProxyHost.CompilationTime());
             _log.LogInformation("Bluetooth adapter {Mac}, device name {Name}", identity.MacColon, identity.Name);
@@ -264,7 +288,6 @@ internal sealed class ProxyRuntime(
                 mdns.Start();
             }
 
-            summary = SummaryLoopAsync(scanner, server, running.Token);
             _log.LogInformation("Proxy is running");
 
             await Task.WhenAny(api, summary).ConfigureAwait(false);
@@ -313,7 +336,7 @@ internal sealed class ProxyRuntime(
         throw new InvalidOperationException("The API server stopped unexpectedly.");
     }
 
-    private async Task SummaryLoopAsync(ScannerSupervisor scanner, ApiServer server, CancellationToken ct)
+    private async Task SummaryLoopAsync(ScannerSupervisor scanner, Func<int> clientCount, CancellationToken ct)
     {
         using var timer = new PeriodicTimer(SummaryInterval, time);
         try
@@ -321,7 +344,7 @@ internal sealed class ProxyRuntime(
             while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
             {
                 var count = Interlocked.Exchange(ref _advertisements, 0);
-                _log.LogInformation("{Count} advertisements in the last minute, {Clients} client(s), status {Status}", count, server.Clients.Count, scanner.Status);
+                _log.LogInformation("{Count} advertisements in the last minute, {Clients} client(s), status {Status}", count, clientCount(), scanner.Status);
             }
         }
         catch (OperationCanceledException)
@@ -407,12 +430,13 @@ internal sealed class ProxyRuntime(
             _onAddressChanged = (_, _) => _republish.Trigger();
         }
 
-        /// <summary>Registers now (on the caller's thread) and from then on whenever the network or the key changes.</summary>
+        /// <summary>Follows the network and the key from now on and publishes right away, on a thread-pool thread (registering can take seconds).</summary>
         public void Start()
         {
-            Publish();
+            // Subscribe first, so a change between "now" and the first publish is not lost.
             NetworkChange.NetworkAddressChanged += _onAddressChanged;
             _encryption.KeyChanged += _trigger;
+            _republish.TriggerNow();
         }
 
         private void Publish()

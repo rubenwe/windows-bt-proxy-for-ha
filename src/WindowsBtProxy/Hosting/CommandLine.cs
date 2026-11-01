@@ -69,9 +69,18 @@ public static class CommandLine
         }
 
         var paths = dataDir is null ? DataPaths.Default : new DataPaths(Path.GetFullPath(dataDir));
+        if (!protectKeyFile && (dataDir is null || SamePath(paths.Root, DataPaths.Default.Root)))
+        {
+            // The real key must never be created without its ACL: only a throwaway data dir may skip it.
+            error = "--no-key-acl is only allowed with a non-default --data-dir";
+            return false;
+        }
         options = new ProxyHostOptions(paths, asService, fakeScanner, noMdns, port, protectKeyFile);
         return true;
     }
+
+    private static bool SamePath(string a, string b)
+        => string.Equals(Path.TrimEndingDirectorySeparator(a), Path.TrimEndingDirectorySeparator(b), StringComparison.OrdinalIgnoreCase);
 
     private static bool Is(string arg, string flag) => string.Equals(arg, flag, StringComparison.OrdinalIgnoreCase);
 }

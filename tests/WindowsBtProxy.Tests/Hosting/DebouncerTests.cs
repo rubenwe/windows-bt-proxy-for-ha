@@ -66,6 +66,19 @@ public sealed class DebouncerTests
     }
 
     [Fact]
+    public async Task TriggerNow_runs_without_waiting_for_the_delay()
+    {
+        var time = new FakeTimeProvider();
+        var runs = 0;
+        await using var debouncer = new Debouncer(Delay, () => Interlocked.Increment(ref runs), time, NullLogger.Instance);
+
+        debouncer.TriggerNow();
+        time.Advance(TimeSpan.FromMilliseconds(1)); // far less than the 2 s delay
+
+        Assert.Equal(1, runs);
+    }
+
+    [Fact]
     public async Task Dispose_cancels_a_pending_run()
     {
         var time = new FakeTimeProvider();

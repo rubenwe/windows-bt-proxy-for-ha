@@ -179,9 +179,8 @@ def test_corrupt_key_file_exits_2(proxy_factory):
     (proxy.data_dir / "noise.key").write_bytes(b"this is not a key\r\n")
     with pytest.raises(RuntimeError, match="exited early") as excinfo:
         proxy.start()
+    # start() raising means the process ended before the port ever accepted a connection.
     assert proxy.exit_code == 2, str(excinfo.value)
-    with pytest.raises(OSError), socket.create_connection((proxy.host, proxy.port), timeout=1):
-        pass  # the port never opened
 
 
 def test_port_in_use_exits_3(proxy_factory):

@@ -75,6 +75,8 @@ public sealed class Installer(IProcessRunner runner, InstallPaths paths, ILogger
             log.LogWarning("Could not set the service description (sc.exe exit code {Code}); continuing.", describe.ExitCode);
         }
         await RequireAsync("sc.exe", $"failure {ServiceName} reset= 86400 actions= restart/5000/restart/5000/restart/30000", "set the service to restart on failure", ct);
+        // Without this flag the failure actions only fire when the process crashes; with it, a stop with a non-zero service exit code counts too.
+        await RequireAsync("sc.exe", $"failureflag {ServiceName} 1", "make a non-zero exit count as a failure", ct);
 
         // Replace, never append: a second rule with the same name would pile up on every upgrade. Rules left by an earlier port
         // (the stored one, or the default) go too. Exit 1 from netsh just means "no such rule".

@@ -45,6 +45,24 @@ public sealed class Debouncer : IAsyncDisposable
         }
     }
 
+    /// <summary>Like <see cref="Trigger"/> but without the pause: the action runs as soon as the thread pool gets to it.</summary>
+    public void TriggerNow()
+    {
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            if (_isRunning)
+            {
+                _again = true;
+                return;
+            }
+            _timer.Change(TimeSpan.Zero, Timeout.InfiniteTimeSpan);
+        }
+    }
+
     private void OnTimer(object? state)
     {
         TaskCompletionSource done;

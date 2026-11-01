@@ -15,7 +15,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROJECT = REPO_ROOT / "src" / "WindowsBtProxy" / "WindowsBtProxy.csproj"
-BIN_DIR = REPO_ROOT / "src" / "WindowsBtProxy" / "bin" / "Debug"
 EXE_NAME = "windows-bt-proxy.exe"
 
 STARTUP_TIMEOUT = 30.0
@@ -29,10 +28,17 @@ def free_port() -> int:
 
 
 def _find_exe() -> Path:
-    candidates = sorted(BIN_DIR.rglob(EXE_NAME), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates:
-        raise FileNotFoundError(f"{EXE_NAME} not found under {BIN_DIR}")
-    return candidates[0]
+    """The exe the Debug build just produced, asked of MSBuild rather than guessed from the bin folder."""
+    result = subprocess.run(
+        ["dotnet", "msbuild", str(PROJECT), "-p:Configuration=Debug", "-getProperty:TargetDir", "-nologo"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    exe = Path(result.stdout.strip()) / EXE_NAME
+    if result.returncode != 0 or not exe.is_file():
+        raise FileNotFoundError(f"{EXE_NAME} not found at {exe}\n{result.stdout}\n{result.stderr}")
+    return exe
 
 
 @pytest.fixture(scope="session")

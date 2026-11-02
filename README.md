@@ -15,15 +15,44 @@ It ships as a single Native AOT executable, `windows-bt-proxy.exe`. No .NET runt
 
 Download the zip for your PC from [Releases](https://github.com/rubenwe/windows-bt-proxy-for-ha/releases/latest) (`win-x64` for Intel/AMD, `win-arm64` for ARM) and unzip it, or [build from source](#build-from-source). `SHA256SUMS.txt` in the release lets you check the download with `Get-FileHash`.
 
-Open an **administrator** terminal in the folder with the exe and run:
+Open a terminal in the folder with the exe and run:
 
 ```
 windows-bt-proxy.exe install
 ```
 
+It asks for administrator rights (UAC) by itself.
+
 The build is unsigned, so SmartScreen may warn on first run: click **More info**, then **Run anyway**.
 
-`install` copies the exe to `%ProgramFiles%\WindowsBtProxyForHA\`, registers the Windows service `WindowsBtProxyForHA` (starts automatically, restarts on failure), adds a firewall rule for TCP 6053 on Private and Domain networks, and creates default settings.
+`install` copies the exe to `%ProgramFiles%\WindowsBtProxyForHA\`, registers the Windows service `WindowsBtProxyForHA` (starts automatically, restarts on failure), adds a firewall rule for TCP 6053 on Private and Domain networks, creates default settings, and starts the [tray icon](#tray-icon) for every user who signs in. Add `--no-tray` to skip the tray icon (for example on a PC nobody signs in to).
+
+Running `install` again over an existing install upgrades it in place, also while the tray icon is running: the tray switches to the new version within 30 seconds.
+
+## Tray icon
+
+A coloured dot in the notification area (it may be under the **^** overflow arrow) shows what the proxy is doing:
+
+| Colour | Meaning |
+| --- | --- |
+| Green | Home Assistant is connected and receiving advertisements |
+| Amber | The proxy is running, but Home Assistant is not connected |
+| Red | The service is not running, Bluetooth is off, there is no Bluetooth adapter, or the scanner failed |
+
+Hover for the reason. Click the icon for a status window (name, adapter, advertisements in the last minute, encryption, connected clients). Right-click for:
+
+- **Status…**: the same window
+- **Show encryption key…**: asks for administrator rights (UAC), shows the key and offers to copy it (the copy is kept out of clipboard history)
+- **Open log folder**
+- **Quit**: hides the icon until the next sign-in; the proxy service keeps running
+
+The same status in a terminal (no administrator rights needed):
+
+```
+windows-bt-proxy.exe status
+```
+
+It exits with code 1 when the service is not running.
 
 ## Add it to Home Assistant
 
@@ -59,7 +88,7 @@ After changing `port`, run `install` again so the firewall rule follows.
 
 ## Encryption key
 
-All key commands, including `key show`, need an administrator terminal:
+All key commands, including `key show`, need an administrator terminal. The tray's **Show encryption key…** does the same as `key show`.
 
 ```
 windows-bt-proxy.exe key show     # print the current key ("no key" if Home Assistant has not provisioned one)
@@ -73,7 +102,7 @@ windows-bt-proxy.exe key clear    # forget the key; Home Assistant asks you to c
 windows-bt-proxy.exe uninstall
 ```
 
-Add `--keep-settings` to keep the settings and key.
+Add `--keep-settings` to keep the settings and key. A running tray icon closes by itself within 30 seconds.
 
 ## Logs
 

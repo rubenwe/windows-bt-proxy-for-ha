@@ -142,8 +142,8 @@ screen buffer was read back with `ReadConsoleOutputCharacter`.
 | `Start-Process probe tray` (ShellExecute, like Run key and Explorer), from the tool shell and from a pwsh window | pass: no window at all: `GetConsoleWindow` 0, 0 processes on a console, no `conhost.exe` child, before and after |
 | `Start-Process probe show`, same two origins | pass: `AllocConsoleWithOptions` returns `NEW_CONSOLE`, a `conhost.exe` child and a Windows Terminal window appear, stdout is the console |
 | Ctrl+C on a `show --ctrlc` wait loop (probe started with `-NoNewWindow` in a pwsh window, `GenerateConsoleCtrlEvent`) | pass: `CancelKeyPress` fired, exit 130 |
-| `Start-Process probe tray` / `show` with `-Verb RunAs` (UAC) | pending (author) |
-| HKCU `...\Run` value `"<probe>" tray`, sign out and in | pending (author) |
+| `Start-Process probe tray` / `show` with `-Verb RunAs` (UAC) | pass with the real exe (author, 2026-11-02): `install` relaunched elevated shows its output in a new window and waits for Enter; `tray --show-key` relaunched elevated shows no console |
+| HKCU `...\Run` value `"<probe>" tray`, sign out and in | not checked (author skipped the sign-out) |
 
 Also with the real exe (variant A applied), same harness: `version`, an unknown verb (usage, exit 1) and `key show`
 (not elevated: "Run this from an elevated terminal", exit 1) show their output in a pwsh window and exit with the right code;
@@ -158,3 +158,26 @@ The manifest setting is ignored, so every launch gets a console. Fallback in cod
 this PC; the shape was simulated with the probe built without the policy (`probe-nopolicy tray --release-if-alone`, started
 through `Start-Process`): console present with 1 process, freed, `GetConsoleWindow` 0 afterwards. Variant B (no manifest policy,
 `conhost.exe --headless "<exe>" tray` in the Run key) is not needed while the terminal rows pass.
+
+## Tray, 2026-11-02
+
+On the author's desktop against production Home Assistant 2026.10.4. Build `0.1.0+c05c97a` (the tray branch before the version
+bump), Native AOT win-x64, installed with `windows-bt-proxy.exe install` from a **non-elevated** terminal over the running 0.1.0
+service.
+
+| Check | Result |
+| --- | --- |
+| `install` from a normal terminal: UAC, elevated window with the output, upgrade in place, HKLM Run value `"<exe>" tray` | pass |
+| Tray starts unelevated in the user's session after the elevated install exits | pass |
+| Icon after install | pass: green |
+| `windows-bt-proxy status` in a normal terminal | pass: scanner, advertisements, port, encryption, HA's IP subscribed and encrypted |
+| Status window (click), menu (right-click) | pass |
+| Show encryption key: UAC declined | pass: nothing happens |
+| Show encryption key: UAC accepted | pass: key shown, copied to the clipboard |
+| This proxy's own ESPHome entry disabled in HA, then re-enabled | pass: `status` showed no clients and the icon went amber; on re-enable HA reconnected encrypted and the icon went green |
+| `net stop` / `net start` of the service (elevated) | pass: red, then green |
+| Bluetooth off for 20 s | not checked: mouse and keyboard are Bluetooth, so the tray cannot be inspected while the radio is off. The scanner side (`RadioOff`) passed on 2026-11-01; the tray mapping is covered by unit tests |
+| Restart Explorer, sign out and in | not checked |
+| `install` again with the tray running (restart into the new build), scripted `install` with captured output | not checked on hardware; covered by tests and the final review |
+| `uninstall --keep-settings` with the tray running | not checked on hardware |
+| Surface laptop | not checked |

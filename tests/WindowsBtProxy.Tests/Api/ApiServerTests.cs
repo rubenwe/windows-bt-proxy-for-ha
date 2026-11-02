@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using Google.Protobuf;
@@ -21,8 +22,8 @@ public class ApiServerTests
         Assert.Equal(1u, hello.ApiVersionMajor);
         Assert.Equal(13u, hello.ApiVersionMinor);
         Assert.Equal("windows-bt-proxy-334455", hello.Name);
-        Assert.StartsWith("windows-bt-proxy 0.1.0", hello.ServerInfo);
-        Assert.True(hello.ServerInfo.Length > "windows-bt-proxy ".Length);
+        var version = typeof(ApiServer).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
+        Assert.Equal($"windows-bt-proxy {version}", hello.ServerInfo);
     }
 
     [Fact]
